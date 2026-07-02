@@ -23,18 +23,7 @@
 
 ## アーキテクチャ
 
-```mermaid
-flowchart LR
-    Source["在庫変動イベント\n(POSレジ・倉庫システムを想定したシミュレータ)"]
-    EH["Azure Event Hubs\n(Kafka protocol互換)"]
-    Flink["Flink on AKS\n(Flink Kubernetes Operator)"]
-    ADLS["ADLS2\n(Parquet実体ファイル)"]
-    Polaris["Apache Polaris\n(Iceberg REST Catalog)"]
-
-    Source --> EH --> Flink
-    Flink -->|write| ADLS
-    Flink -->|commit| Polaris
-```
+![Architecture](img/architecture.png)
 
 - **Event Hubs**：Kafka protocol互換エンドポイントを使い、Flinkからは通常のKafkaソースとして接続する
 - **Flink on AKS**：Flink Kubernetes OperatorでFlinkDeployment CRDとしてジョブを管理。商品ごとに現在庫数をstateとして保持し、イベントごとに即時更新・閾値判定（詳細はADR参照）した結果をIcebergにsink
