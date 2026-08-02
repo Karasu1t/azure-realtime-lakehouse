@@ -21,3 +21,12 @@ module "adls2" {
   prefix              = var.prefix
   tags                = local.tags
 }
+
+module "event_hubs" {
+  source = "../../modules/event_hubs"
+
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  prefix              = var.prefix
+  tags                = local.tags
+}
