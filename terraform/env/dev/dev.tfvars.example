@@ -1,0 +1,1 @@
+authorized_ip_ranges = ["x.x.x.x/32"] # your home/office IP, single-host CIDR

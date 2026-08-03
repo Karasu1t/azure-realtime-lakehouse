@@ -30,3 +30,23 @@ module "event_hubs" {
   prefix              = var.prefix
   tags                = local.tags
 }
+
+module "networking" {
+  source = "../../modules/networking"
+
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  prefix              = var.prefix
+  tags                = local.tags
+}
+
+module "aks" {
+  source = "../../modules/aks"
+
+  resource_group_name  = azurerm_resource_group.main.name
+  location             = azurerm_resource_group.main.location
+  prefix               = var.prefix
+  subnet_id            = module.networking.aks_subnet_id
+  authorized_ip_ranges = var.authorized_ip_ranges
+  tags                 = local.tags
+}
