@@ -1,0 +1,17 @@
+# ClusterIP: Polaris is only ever called by Flink, from inside the same
+# cluster (via the DNS name polaris.flink.svc.cluster.local used in
+# flink-jobs/inventory-monitor/01_catalog.sql). No need to expose it
+# outside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: polaris
+  namespace: flink
+spec:
+  type: ClusterIP
+  selector:
+    app: polaris
+  ports:
+    - port: 8181
+      targetPort: 8181
+      name: catalog-api

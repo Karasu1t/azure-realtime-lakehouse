@@ -1,0 +1,54 @@
+# In-memory persistence: catalog metadata (namespaces, table pointers) is
+# lost if this Pod restarts. Acceptable here because the whole cluster gets
+# destroyed between verification sessions anyway -- a real DB backend would
+# only survive a mid-session Pod crash, not a terraform destroy, so it
+# wouldn't earn its cost for this project. See README ADR for the same
+# reasoning applied to skipping Trino.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: polaris
+  namespace: flink
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: polaris
+  template:
+    metadata:
+      labels:
+        app: polaris
+    spec:
+      containers:
+        - name: polaris
+          # Pin to a specific release before relying on this outside a demo;
+          # verify the current tag and health/port conventions against
+          # Apache Polaris's docs at deploy time -- this is a fast-moving
+          # project and these details have changed across releases.
+          image: apache/polaris:latest
+          ports:
+            - containerPort: 8181
+              name: catalog-api
+          env:
+            - name: POLARIS_PERSISTENCE_TYPE
+              value: in-memory
+          envFrom:
+            - secretRef:
+                name: polaris-bootstrap
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /q/health/ready
+              port: 8182
+            initialDelaySeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /q/health/live
+              port: 8182
+            initialDelaySeconds: 20

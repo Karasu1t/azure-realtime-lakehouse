@@ -50,3 +50,13 @@ module "aks" {
   authorized_ip_ranges = var.authorized_ip_ranges
   tags                 = local.tags
 }
+
+module "acr" {
+  source = "../../modules/acr"
+
+  resource_group_name               = azurerm_resource_group.main.name
+  location                          = azurerm_resource_group.main.location
+  prefix                            = var.prefix
+  aks_kubelet_identity_principal_id = module.aks.kubelet_identity_object_id
+  tags                              = local.tags
+}

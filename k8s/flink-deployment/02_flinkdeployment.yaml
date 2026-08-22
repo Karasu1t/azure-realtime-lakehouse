@@ -1,0 +1,58 @@
+# FlinkDeployment is a CRD added by the Flink Kubernetes Operator, not a
+# built-in Kubernetes kind -- applying this only works after
+# k8s/flink-operator/install.sh has run.
+#
+# spec.job.jarURI must point to an executable JAR: raw .sql files can't be
+# submitted directly. This uses the "SQL runner" pattern from Apache
+# Flink's own flink-kubernetes-operator examples (examples/flink-sql-runner-
+# example) -- flink-jobs/sql-runner is our version of it. Build and push
+# it first with flink-jobs/sql-runner/build-and-push.sh (which itself
+# depends on an Azure Container Registry that doesn't exist in Terraform
+# yet -- see that script's header comment).
+#
+# ${VAR} placeholders (ADLS_ACCOUNT_NAME, ADLS_ACCOUNT_KEY) are filled in
+# by 01_render-and-deploy.sh from 00_secrets.env, same as the SQL files --
+# this file is envsubst'd before being applied, never applied as-is.
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata:
+  name: inventory-monitor
+  namespace: flink
+spec:
+  image: <acr-name>.azurecr.io/sql-runner:latest
+  flinkVersion: v1_18
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "2"
+    # Checkpoints land in ADLS2 (via the flink-azure-fs-hadoop plugin baked
+    # into the sql-runner image) instead of the JobManager Pod's local
+    # disk, so a Pod loss no longer loses in-flight state between
+    # checkpoints. Auth reuses the same storage account key already used
+    # for the Iceberg catalog in flink-jobs/inventory-monitor/01_catalog.sql.
+    state.checkpoints.dir: "abfss://lakehouse@${ADLS_ACCOUNT_NAME}.dfs.core.windows.net/checkpoints"
+    "fs.azure.account.key.${ADLS_ACCOUNT_NAME}.dfs.core.windows.net": "${ADLS_ACCOUNT_KEY}"
+    execution.checkpointing.interval: "30s"
+  serviceAccount: flink
+  jobManager:
+    resource:
+      memory: "1024m"
+      cpu: 0.5
+  taskManager:
+    resource:
+      memory: "1024m"
+      cpu: 0.5
+  podTemplate:
+    spec:
+      containers:
+        - name: flink-main-container
+          volumeMounts:
+            - name: sql-scripts
+              mountPath: /opt/flink/sql
+      volumes:
+        - name: sql-scripts
+          configMap:
+            name: flink-sql
+  job:
+    jarURI: local:///opt/flink/usrlib/sql-runner.jar
+    args: ["/opt/flink/sql"]
+    parallelism: 2
+    upgradeMode: stateless

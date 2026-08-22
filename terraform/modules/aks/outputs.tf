@@ -11,3 +11,8 @@ output "cluster_identity_principal_id" {
   description = "Object ID of the cluster's system-assigned identity, used for RBAC role assignments (e.g. ADLS2 access)"
   value       = azurerm_kubernetes_cluster.this.identity[0].principal_id
 }
+
+output "kubelet_identity_object_id" {
+  description = "Object ID of the auto-provisioned kubelet identity nodes use to pull container images -- different from cluster_identity_principal_id, which is the control-plane identity"
+  value       = azurerm_kubernetes_cluster.this.kubelet_identity[0].object_id
+}

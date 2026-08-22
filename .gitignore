@@ -4,6 +4,10 @@
 *.tfvars
 !*.tfvars.example
 .env
+k8s/**/*_secret.yaml
+!k8s/**/*_secret.example.yaml
+k8s/**/*_secrets.env
+!k8s/**/*_secrets.example.env
 __pycache__/
 *.pyc
 .DS_Store
