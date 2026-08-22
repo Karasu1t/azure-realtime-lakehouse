@@ -1,0 +1,57 @@
+name: iceberg expire snapshots
+
+# workflow_dispatch, not schedule: this only makes sense while AKS/ADLS2
+# from an active verification session are still up. A cron job would
+# mostly fail against a destroyed cluster -- see README ADR.
+on:
+  workflow_dispatch:
+    inputs:
+      retention_hours:
+        description: "Expire snapshots older than this many hours"
+        default: "24"
+
+permissions:
+  id-token: write # reuses the same Federated Credential from scripts/setup-oidc.sh
+  contents: read
+
+jobs:
+  expire-snapshots:
+    runs-on: ubuntu-latest
+    env:
+      SNAPSHOT_RETENTION_HOURS: ${{ inputs.retention_hours }}
+      POLARIS_CLIENT_ID: ${{ secrets.POLARIS_CLIENT_ID }}
+      POLARIS_CLIENT_SECRET: ${{ secrets.POLARIS_CLIENT_SECRET }}
+      ADLS_ACCOUNT_NAME: ${{ vars.ADLS_ACCOUNT_NAME }}
+      ADLS_ACCOUNT_KEY: ${{ secrets.ADLS_ACCOUNT_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Populates kubeconfig so kubectl below can reach the cluster.
+      # Unverified: whether this SP's Contributor role is sufficient for
+      # Kubernetes-level RBAC (port-forward into the flink namespace)
+      # depends on the AKS cluster's authorization mode, which
+      # terraform/modules/aks doesn't set explicitly yet.
+      - run: |
+          az aks get-credentials \
+            --resource-group "${{ vars.AKS_RESOURCE_GROUP }}" \
+            --name "${{ vars.AKS_CLUSTER_NAME }}"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r scripts/requirements.txt
+
+      # Runner needs a route to Polaris's ClusterIP-only Service; a
+      # self-hosted runner inside the VNet would see it directly, but a
+      # GitHub-hosted runner needs this tunnel.
+      - run: |
+          kubectl port-forward svc/polaris 8181:8181 -n flink &
+          sleep 5
+          python scripts/expire_snapshots.py

@@ -6,7 +6,12 @@ CREATE CATALOG polaris_catalog WITH (
   'catalog-type' = 'rest',
   'uri'          = 'http://polaris.flink.svc.cluster.local:8181/api/catalog',
   'warehouse'    = 'lakehouse',
-  'token'        = '${POLARIS_ACCESS_TOKEN}',
+
+  -- 'credential' (not a static 'token') so the Iceberg REST client
+  -- fetches and auto-refreshes an OAuth2 token itself via Polaris's
+  -- /oauth/tokens endpoint. This job runs indefinitely, and a static
+  -- bearer token would eventually expire mid-job with no way to renew it.
+  'credential'   = '${POLARIS_CLIENT_ID}:${POLARIS_CLIENT_SECRET}',
 
   -- Iceberg's Azure module talks to ADLS2 directly via abfss:// paths;
   -- Polaris only manages the metadata pointer, not the data files.

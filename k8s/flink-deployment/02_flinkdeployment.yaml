@@ -19,7 +19,7 @@ metadata:
   name: inventory-monitor
   namespace: flink
 spec:
-  image: <acr-name>.azurecr.io/sql-runner:latest
+  image: ${ACR_LOGIN_SERVER}/sql-runner:latest
   flinkVersion: v1_18
   flinkConfiguration:
     taskmanager.numberOfTaskSlots: "2"

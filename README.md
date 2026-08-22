@@ -48,7 +48,7 @@
 
 ---
 
-## ディレクトリ構成（予定）
+## ディレクトリ構成
 
 ```
 .
@@ -57,19 +57,49 @@
 │   │   ├── aks/                # AKSクラスタ本体
 │   │   ├── event_hubs/         # Event Hubs namespace + Kafka互換設定
 │   │   ├── adls2/              # ストレージアカウント + コンテナ
-│   │   └── networking/         # VNet, Subnet, NSG等
+│   │   ├── networking/         # VNet, Subnet
+│   │   └── acr/                # sql-runnerイメージ置き場、AKSにAcrPull付与
 │   └── env/
-│       └── dev/
+│       └── dev/                # `terraform output`で各種接続情報を取得
 ├── k8s/
-│   ├── flink-operator/         # Flink Kubernetes Operatorのデプロイ定義
-│   ├── flink-deployment/       # FlinkDeployment CRD（ジョブ定義）
-│   └── polaris/                # Polarisのデプロイ定義
+│   ├── flink-operator/         # Flink Kubernetes OperatorのHelmインストール
+│   ├── polaris/                # Polaris本体（Deployment + Service、in-memory）
+│   └── flink-deployment/       # FlinkDeployment CRD + secretsからのenvsubst&apply
 ├── flink-jobs/
-│   └── inventory-monitor/      # 在庫減少検知ジョブ（Flink SQL or DataStream API）
+│   ├── inventory-monitor/      # 在庫減少検知ジョブ（4本のFlink SQL）
+│   └── sql-runner/             # SQLファイルを順に実行する自作Javaランナー
 ├── simulator/
-│   └── inventory-event-producer/  # 在庫変動イベントのシミュレータ
-└── .github/workflows/
+│   └── inventory-event-producer/  # 在庫変動イベントのシミュレータ（Python）
+├── scripts/                    # 動作確認・メンテナンス用（後述）
+└── .github/workflows/          # terraform apply/destroy、Icebergメンテナンス
 ```
+
+---
+
+## 動かし方
+
+検証セッションごとにインフラを作って壊す運用（コスト管理のため）。おおまかな手順:
+
+1. **インフラをapply**
+   ```bash
+   cd terraform/env/dev
+   cp dev.tfvars.example dev.tfvars   # 自宅IPを記入
+   terraform apply -var-file=dev.tfvars
+   ```
+2. **kubectlをAKSに接続**
+   ```bash
+   az aks get-credentials --resource-group $(terraform output -raw resource_group_name) \
+     --name $(terraform output -raw aks_cluster_name)
+   ```
+3. **Flink Kubernetes Operatorをインストール**: `k8s/flink-operator/install.sh`
+4. **Polarisをデプロイ**: `k8s/polaris/01_secret.example.yaml`を`01_secret.yaml`にコピーして値を埋め、`kubectl apply -f k8s/polaris/`
+5. **SQLランナーをビルド・push**: `ACR_NAME=$(terraform output -raw acr_login_server | cut -d. -f1) flink-jobs/sql-runner/build-and-push.sh`
+6. **FlinkDeploymentをデプロイ**: `k8s/flink-deployment/00_secrets.example.env`を`00_secrets.env`にコピーし、`terraform output`の値とPolarisのbootstrap認証情報を埋めてから`k8s/flink-deployment/01_render-and-deploy.sh`
+7. **シミュレータでイベントを流す**: `simulator/inventory-event-producer/producer.py`
+8. **動作確認**: `kubectl port-forward svc/polaris 8181:8181 -n flink`を開いた別ターミナルで`scripts/verify_stock_status.py`
+9. **後片付け**: `terraform destroy -var-file=dev.tfvars`
+
+GitHub Actions（`terraform_apply.yml`/`terraform_destroy.yml`）からも1・9はworkflow_dispatchで実行できる（OIDC認証、`scripts/setup-oidc.sh`で事前セットアップが必要）。
 
 ---
 
@@ -103,3 +133,6 @@ Azureの本番組織ではサブスクリプションをdev/stg/prdで分離し�
 
 **常時稼働させるのか？コストはどう考えているか？**
 ポートフォリオ規模なので基本は検証時のみの稼働。ただしストリーミング処理という性質上、常時起動していること自体に意味があるため、24時間365日ではなく「営業時間内（在庫イベントが発生する時間帯）は常時稼働、夜間は停止」という構成を想定している。これは実際の小売現場の運用とも整合する現実的なコスト管理であり、本番運用を想定したコスト意識として明示する。
+
+**Icebergのmetadata/manifest/data fileが際限なく増える問題にどう対応するか？**
+Icebergはcheckpointのたびに新しいmetadata.jsonを追加する（上書きしない）仕様のため、放置すると本番運用ではファイル数が容易に数千〜数万に達する。この対策として`scripts/expire_snapshots.py`と`.github/workflows/iceberg_maintenance.yml`でExpire Snapshotsを実装している。ただし本ポートフォリオの実際の運用（検証セッションごとに`terraform destroy`でADLS2ごと環境を破棄する）では、蓄積は1セッション（数時間）分にしか発生せず、セッションをまたいで無限に増え続けるわけではない。にもかかわらず実装したのは、本番運用でこの問題が実際に起きること・その対処法を理解していることを示すため。cronによる定期実行ではなくworkflow_dispatch（手動実行）にしているのも同じ理由で、常時稼働しないAKS/ADLS2に対してスケジュール実行を組んでも大半は対象が存在せず失敗するだけであり、実際のライフサイクルに即した設計判断である。

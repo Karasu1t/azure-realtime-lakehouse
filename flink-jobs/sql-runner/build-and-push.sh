@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds the SQL runner jar and pushes the image AKS will pull for
-# spec.image in k8s/flink-deployment/02_flinkdeployment.yaml.
+# Builds the SQL runner jar and pushes the image to the ACR provisioned
+# by terraform/modules/acr (AKS's kubelet identity already has AcrPull on
+# it, so no image pull secret is needed).
 #
-# NOT YET WIRED UP: this assumes an Azure Container Registry already
-# exists and that the AKS cluster has been granted AcrPull on it. Neither
-# exists in terraform/modules yet -- there's no azurerm_container_registry
-# resource, and no role assignment granting the AKS cluster's identity
-# pull access. That's the next real gap to close, not this script.
+# ACR_NAME is the registry name terraform created, e.g.
+# `terraform output -raw acr_login_server` in terraform/env/dev, minus
+# the .azurecr.io suffix.
 
 ACR_NAME="${ACR_NAME:?set ACR_NAME to the Azure Container Registry name, e.g. acrrealtimelakehousedev}"
 IMAGE="${ACR_NAME}.azurecr.io/sql-runner:latest"
@@ -23,4 +22,4 @@ az acr login --name "${ACR_NAME}"
 docker push "${IMAGE}"
 
 echo "Built and pushed ${IMAGE}"
-echo "Update spec.image in k8s/flink-deployment/02_flinkdeployment.yaml to match."
+echo "ACR_LOGIN_SERVER in k8s/flink-deployment/00_secrets.env should be ${ACR_NAME}.azurecr.io"

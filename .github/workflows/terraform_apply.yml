@@ -1,0 +1,28 @@
+name: terraform apply
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write # required to mint the OIDC token the azurerm provider exchanges
+  contents: read
+
+env:
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  ARM_USE_OIDC: "true"
+  # JSON array string, e.g. ["1.2.3.4/32"] -- see terraform/env/dev/dev.tfvars.example
+  TF_VAR_authorized_ip_ranges: ${{ vars.TF_VAR_AUTHORIZED_IP_RANGES }}
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform/env/dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform init
+      - run: terraform apply -auto-approve
