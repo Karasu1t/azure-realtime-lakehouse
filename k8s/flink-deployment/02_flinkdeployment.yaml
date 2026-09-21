@@ -20,7 +20,7 @@ metadata:
   namespace: flink
 spec:
   image: ${ACR_LOGIN_SERVER}/sql-runner:latest
-  flinkVersion: v1_18
+  flinkVersion: v1_20
   flinkConfiguration:
     taskmanager.numberOfTaskSlots: "2"
     # Checkpoints land in ADLS2 (via the flink-azure-fs-hadoop plugin baked
