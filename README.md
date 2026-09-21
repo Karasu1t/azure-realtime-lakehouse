@@ -76,9 +76,25 @@
 
 ---
 
+## 検証状況
+
+実機（Azure従量課金）で層ごとに確認した結果。**Flinkジョブの起動は未達**で、原因の切り分けは手元のDockerで継続中。
+
+| 層 | 状態 |
+|---|---|
+| Terraform（11リソース）/ ADLS2のfirewall経由アクセス | 確認済み |
+| Event Hubs（Kafka互換）へのシミュレータ送信と読み戻し | 確認済み（21件） |
+| AKS / cert-manager + Flink Kubernetes Operator 1.16.0 | 確認済み |
+| Polaris 1.7.0（AKS上で起動、カタログ・専用principalの初期化） | 確認済み |
+| sql-runnerイメージのbuild → ACR push → Podでpull | 確認済み |
+| `FlinkDeployment`（Kafka → Iceberg on Polaris）の稼働 | **未達**（`CREATE CATALOG`でJobManagerがHadoopクラスを認識できず失敗。手元のSQLクライアントでは同じjar構成で通る） |
+| event_timeの型（`TIMESTAMP(3)`とタイムゾーン付き文字列）、検証スクリプト、CI/CD | 未検証 |
+
+---
+
 ## 動かし方
 
-検証セッションごとにインフラを作って壊す運用（コスト管理のため）。おおまかな手順:
+検証セッションごとにインフラを作って壊す運用（コスト管理のため）。手順は実機で通した順序:
 
 1. **インフラをapply**
    ```bash
@@ -91,15 +107,20 @@
    az aks get-credentials --resource-group $(terraform output -raw resource_group_name) \
      --name $(terraform output -raw aks_cluster_name)
    ```
-3. **Flink Kubernetes Operatorをインストール**: `k8s/flink-operator/install.sh`
-4. **Polarisをデプロイ**: `k8s/polaris/01_secret.example.yaml`を`01_secret.yaml`にコピーして値を埋め、`kubectl apply -f k8s/polaris/`
-5. **SQLランナーをビルド・push**: `ACR_NAME=$(terraform output -raw acr_login_server | cut -d. -f1) flink-jobs/sql-runner/build-and-push.sh`
-6. **FlinkDeploymentをデプロイ**: `k8s/flink-deployment/00_secrets.example.env`を`00_secrets.env`にコピーし、`terraform output`の値とPolarisのbootstrap認証情報を埋めてから`k8s/flink-deployment/01_render-and-deploy.sh`
-7. **シミュレータでイベントを流す**: `simulator/inventory-event-producer/producer.py`
-8. **動作確認**: `kubectl port-forward svc/polaris 8181:8181 -n flink`を開いた別ターミナルで`scripts/verify_stock_status.py`
-9. **後片付け**: `terraform destroy -var-file=dev.tfvars`
+3. **Flink Kubernetes Operatorをインストール**: `k8s/flink-operator/install.sh`（cert-managerも入る）
+4. **Polarisをデプロイ**: `k8s/polaris/01_secret.example.yaml`を`01_secret.yaml`にコピーして認証情報を埋め、**4ファイルを明示して**適用する（`-f k8s/polaris/`だと`.example`のプレースホルダーも適用されてしまう）
+   ```bash
+   kubectl apply -f k8s/polaris/00_namespace.yaml -f k8s/polaris/01_secret.yaml \
+     -f k8s/polaris/02_deployment.yaml -f k8s/polaris/03_service.yaml
+   ```
+5. **Polarisを初期化**: `kubectl port-forward svc/polaris 8181:8181 -n flink`を開いた状態で`scripts/setup-polaris.sh`。カタログ`lakehouse`とFlink専用のprincipal（`flink_app`）を作り、その認証情報を出力する。in-memoryなのでPolarisのPodが再起動したら再実行する
+6. **SQLランナーをビルド・push**: `ACR_NAME=... SQL_RUNNER_TAG=<一意なタグ> flink-jobs/sql-runner/build-and-push.sh`（タグは毎回変える）
+7. **FlinkDeploymentをデプロイ**: `k8s/flink-deployment/00_secrets.example.env`を`00_secrets.env`にコピーし、`terraform output`の値・手順5の認証情報・手順6のタグを埋めてから`k8s/flink-deployment/01_render-and-deploy.sh`
+8. **シミュレータでイベントを流す**: `simulator/inventory-event-producer/producer.py`
+9. **動作確認**: port-forwardを開いた別ターミナルで`scripts/verify_stock_status.py`
+10. **後片付け**: `terraform destroy -var-file=dev.tfvars`
 
-GitHub Actions（`terraform_apply.yml`/`terraform_destroy.yml`）からも1・9はworkflow_dispatchで実行できる（OIDC認証、`scripts/setup-oidc.sh`で事前セットアップが必要）。
+GitHub Actions（`terraform_apply.yml`/`terraform_destroy.yml`）からも1・10はworkflow_dispatchで実行できる（OIDC認証、`scripts/setup-oidc.sh`で事前セットアップが必要）。
 
 ---
 
@@ -124,7 +145,7 @@ FlinkはKafkaソースのoffsetとIcebergへの書き込みコミットを、che
 動作確認だけが目的であれば、`pyiceberg`等でPolarisカタログ経由でテーブルを直接読めば足りる。Trinoを常時稼働させるのは「検証用」の名目に対してコンポーネントが過剰で、AKSの運用コストも増える。クエリエンジンを増やすメリット（複数エンジンからの同時アクセスの証明）よりコストの方が大きいと判断し、スコープから外した。
 
 **検知ロジックはウィンドウ集計かstateful processingか？**
-stateful processing（`KeyedProcessFunction`で商品IDごとに現在庫数を保持し、イベントごとに即時更新・閾値判定）を採用する。在庫数は「期間内の変化量」ではなく「今この瞬間の値」なので、ウィンドウ集計（期間で区切ってから判定）とは表現したいものの構造が合わない上、ウィンドウが閉じるまで判定を待つ遅延が再び発生し、「即座に検知する」という本プロジェクトの前提と矛盾する。
+stateful processing（Flink SQLの`GROUP BY product_id`で商品ごとの現在庫数をstateとして保持し、イベントごとに即時更新・閾値判定）を採用する。当初はDataStream APIの`KeyedProcessFunction`を想定していたが、この集計はSQLの集計関数で表現でき、JARのビルド・依存管理が要らないためFlink SQLにした（sql-runnerがSQLファイルを順に流す）。在庫数は「期間内の変化量」ではなく「今この瞬間の値」なので、ウィンドウ集計（期間で区切ってから判定）とは表現したいものの構造が合わない上、ウィンドウが閉じるまで判定を待つ遅延が再び発生し、「即座に検知する」という本プロジェクトの前提と矛盾する。
 
 なお閾値そのもの（何個を下回ったらアラートか）の最適値を導出するロジックはスコープ外。これは在庫最適化（需要予測・発注リードタイムを踏まえた発注点計算）の問題であり、ストリーミング基盤の役割は「外部から設定された閾値を、設定が何であれ即座に検知できること」に限定する。
 
@@ -139,3 +160,13 @@ Icebergはcheckpointのたびに新しいmetadata.jsonを追加する（上書�
 
 **ADLS2へのネットワーク経路とアクセス認証はどこまで本番相当か？**
 ADLS2は`public_network_access_enabled = true`のまま、ファイアウォールを`default_action = "Deny"`にしてAKSのサブネット（サービスエンドポイント）と検証用の自宅IPだけを許可している。`false`にするとPrivate Endpoint経由以外が全て拒否され、AKS上のFlinkから届かなくなるため。本番ならPrivate Endpointで公開エンドポイントを完全に閉じるのが正しいが、検証スクリプトを手元PCから実行できる構成を優先し、定石を知った上で簡略化している。同様に認証もストレージアカウントキーを使っており、本番ならWorkload Identity+RBACでキーを持たない構成にする。この2点は核心の動作確認後の改善候補として残している。
+
+
+**Azure従量課金でVMサイズをどう選ぶか？（quotaとSKU制限）**
+ノードVMは`Standard_D2as_v7`。当初の`Standard_B2s_v2`は`ErrCode_InsufficientVCPUQuota`で作成に失敗した。vCPU quotaはリージョン合計とは別に**VMファミリーごと**に割り当てられ、この従量課金サブスクリプションではBsv2やDsv5が0だった。さらにquotaがあっても`NotAvailableForSubscription`（SKU制限）で使えないサイズがあり（Dsv6等）、**両方を満たすものだけが使える**。無料試用では通っていたため`plan`でも気付けない。`az vm list-usage`と`az vm list-skus`の突き合わせで選定した。
+
+**コンテナイメージのタグはなぜ毎回変えるのか？**
+`:latest`のようなmutableなタグは、ノードが`imagePullPolicy: IfNotPresent`でキャッシュするため、ACRに再pushしても**古いイメージのまま動き続ける**（実際に発生し、原因特定に時間を要した）。ビルドごとに一意なタグ（`SQL_RUNNER_TAG`）を明示し、`build-and-push.sh`はタグ無しでは実行を拒否する。
+
+**課金環境で試す前に、何を手元で検証するか？**
+Polarisの設定は、AKSに載せる前に手元のDockerで同じ手順（起動、認証、カタログ作成、名前空間作成）を通した。これで公式ドキュメントに載っていない挙動（realm名の不一致は`unauthorized_client`としか返らない、`default-base-location`はコンテナのルートでなければ名前空間作成が400になる）を、課金なしで潰せた。Flink側も同様に、`Could not find any factory for identifier 'iceberg'`という「ファクトリが存在しない」ように見えるエラーが、実際には**依存クラス（Hadoop）が読めずにファクトリが発見対象から静かに除外された**場合にも出る（jarを別のIceberg版に差し替えて初めて`ClassNotFoundException`が見えた）。メッセージだけでは区別できないため、原因が分からないときは課金環境で粘らず、手元で最小構成に落として切り分ける。
