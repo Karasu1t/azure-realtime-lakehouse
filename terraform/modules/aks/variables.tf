@@ -27,9 +27,11 @@ variable "node_count" {
 variable "vm_size" {
   description = "VM size for the default node pool"
   type        = string
-  # B-series v1 (e.g. Standard_B2s) is not in this subscription's allowed
-  # SKU list for japaneast; v2 is.
-  default = "Standard_B2s_v2"
+  # A size must have both vCPU quota (`az vm list-usage -l japaneast`) and no
+  # SKU restriction (`az vm list-skus -l japaneast --size Standard_D2`). On
+  # this pay-as-you-go subscription Bsv2 and Dsv5 have quota 0
+  # (ErrCode_InsufficientVCPUQuota) and Dsv6 is NotAvailableForSubscription.
+  default = "Standard_D2as_v7"
 }
 
 variable "authorized_ip_ranges" {
