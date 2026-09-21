@@ -13,6 +13,16 @@ variable "prefix" {
   type        = string
 }
 
+variable "allowed_subnet_ids" {
+  description = "Subnets (with the Microsoft.Storage service endpoint) allowed through the storage firewall"
+  type        = list(string)
+}
+
+variable "allowed_ip_addresses" {
+  description = "Public IPs allowed through the storage firewall, e.g. for running verification scripts from a workstation. Single hosts must be plain addresses, not /32 CIDRs."
+  type        = list(string)
+}
+
 variable "tags" {
   description = "Tags applied to the storage account"
   type        = map(string)

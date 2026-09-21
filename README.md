@@ -136,3 +136,6 @@ Azureの本番組織ではサブスクリプションをdev/stg/prdで分離し�
 
 **Icebergのmetadata/manifest/data fileが際限なく増える問題にどう対応するか？**
 Icebergはcheckpointのたびに新しいmetadata.jsonを追加する（上書きしない）仕様のため、放置すると本番運用ではファイル数が容易に数千〜数万に達する。この対策として`scripts/expire_snapshots.py`と`.github/workflows/iceberg_maintenance.yml`でExpire Snapshotsを実装している。ただし本ポートフォリオの実際の運用（検証セッションごとに`terraform destroy`でADLS2ごと環境を破棄する）では、蓄積は1セッション（数時間）分にしか発生せず、セッションをまたいで無限に増え続けるわけではない。にもかかわらず実装したのは、本番運用でこの問題が実際に起きること・その対処法を理解していることを示すため。cronによる定期実行ではなくworkflow_dispatch（手動実行）にしているのも同じ理由で、常時稼働しないAKS/ADLS2に対してスケジュール実行を組んでも大半は対象が存在せず失敗するだけであり、実際のライフサイクルに即した設計判断である。
+
+**ADLS2へのネットワーク経路とアクセス認証はどこまで本番相当か？**
+ADLS2は`public_network_access_enabled = true`のまま、ファイアウォールを`default_action = "Deny"`にしてAKSのサブネット（サービスエンドポイント）と検証用の自宅IPだけを許可している。`false`にするとPrivate Endpoint経由以外が全て拒否され、AKS上のFlinkから届かなくなるため。本番ならPrivate Endpointで公開エンドポイントを完全に閉じるのが正しいが、検証スクリプトを手元PCから実行できる構成を優先し、定石を知った上で簡略化している。同様に認証もストレージアカウントキーを使っており、本番ならWorkload Identity+RBACでキーを持たない構成にする。この2点は核心の動作確認後の改善候補として残している。

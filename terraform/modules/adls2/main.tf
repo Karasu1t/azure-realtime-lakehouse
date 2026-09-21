@@ -20,8 +20,16 @@ resource "azurerm_storage_account" "this" {
   is_hns_enabled = true
 
   min_tls_version                 = "TLS1_2"
-  public_network_access_enabled   = false
+  public_network_access_enabled   = true
   allow_nested_items_to_be_public = false
+
+  # public_network_access_enabled = false would allow Private Endpoints only,
+  # which blocks Flink in AKS; Deny-by-default rules keep it closed instead.
+  network_rules {
+    default_action             = "Deny"
+    virtual_network_subnet_ids = var.allowed_subnet_ids
+    ip_rules                   = var.allowed_ip_addresses
+  }
 
   tags = var.tags
 }

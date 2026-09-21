@@ -16,10 +16,12 @@ resource "azurerm_resource_group" "main" {
 module "adls2" {
   source = "../../modules/adls2"
 
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  prefix              = var.prefix
-  tags                = local.tags
+  resource_group_name  = azurerm_resource_group.main.name
+  location             = azurerm_resource_group.main.location
+  prefix               = var.prefix
+  allowed_subnet_ids   = [module.networking.aks_subnet_id]
+  allowed_ip_addresses = [for cidr in var.authorized_ip_ranges : trimsuffix(cidr, "/32")]
+  tags                 = local.tags
 }
 
 module "event_hubs" {

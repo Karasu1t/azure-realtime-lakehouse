@@ -15,4 +15,8 @@ resource "azurerm_subnet" "aks" {
   resource_group_name  = var.resource_group_name
   virtual_network_name = azurerm_virtual_network.this.name
   address_prefixes     = var.aks_subnet_address_prefix
+
+  # Lets storage firewall rules allow this subnet by identity, so Flink
+  # Pods can reach ADLS2 without a Private Endpoint.
+  service_endpoints = ["Microsoft.Storage"]
 }
