@@ -12,6 +12,9 @@ CREATE CATALOG polaris_catalog WITH (
   -- /oauth/tokens endpoint. This job runs indefinitely, and a static
   -- bearer token would eventually expire mid-job with no way to renew it.
   'credential'   = '${POLARIS_CLIENT_ID}:${POLARIS_CLIENT_SECRET}',
+  -- Polaris rejects the Iceberg client's default scope 'catalog' with
+  -- invalid_scope; it wants a principal-role scope.
+  'scope'        = 'PRINCIPAL_ROLE:ALL',
 
   -- Iceberg's Azure module talks to ADLS2 directly via abfss:// paths;
   -- Polaris only manages the metadata pointer, not the data files.
