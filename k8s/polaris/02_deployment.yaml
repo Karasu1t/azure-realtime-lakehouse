@@ -21,17 +21,15 @@ spec:
     spec:
       containers:
         - name: polaris
-          # Pin to a specific release before relying on this outside a demo;
-          # verify the current tag and health/port conventions against
-          # Apache Polaris's docs at deploy time -- this is a fast-moving
-          # project and these details have changed across releases.
-          image: apache/polaris:latest
+          image: apache/polaris:1.7.0
           ports:
             - containerPort: 8181
               name: catalog-api
           env:
             - name: POLARIS_PERSISTENCE_TYPE
               value: in-memory
+            - name: polaris.realm-context.realms
+              value: POLARIS
           envFrom:
             - secretRef:
                 name: polaris-bootstrap
