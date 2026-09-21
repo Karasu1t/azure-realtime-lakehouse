@@ -11,3 +11,4 @@ k8s/**/*_secrets.env
 __pycache__/
 *.pyc
 .DS_Store
+target/

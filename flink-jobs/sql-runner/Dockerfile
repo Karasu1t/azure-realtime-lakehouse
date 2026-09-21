@@ -11,6 +11,15 @@ ADD ${MAVEN}/org/apache/flink/flink-sql-connector-kafka/${KAFKA_CONNECTOR_VERSIO
 ADD ${MAVEN}/org/apache/iceberg/iceberg-flink-runtime-1.20/${ICEBERG_VERSION}/iceberg-flink-runtime-1.20-${ICEBERG_VERSION}.jar /opt/flink/lib/
 ADD ${MAVEN}/org/apache/iceberg/iceberg-azure-bundle/${ICEBERG_VERSION}/iceberg-azure-bundle-${ICEBERG_VERSION}.jar /opt/flink/lib/
 
+# FlinkCatalog depends on org.apache.hadoop.conf.Configuration. Without it the
+# iceberg CatalogFactory silently drops out of discovery and CREATE CATALOG
+# fails with the misleading "Could not find any factory for identifier
+# 'iceberg'" -- the real ClassNotFoundException is only visible when the jar
+# is swapped for another Iceberg version.
+ARG HADOOP_VERSION=3.4.1
+ADD ${MAVEN}/org/apache/hadoop/hadoop-client-api/${HADOOP_VERSION}/hadoop-client-api-${HADOOP_VERSION}.jar /opt/flink/lib/
+ADD ${MAVEN}/org/apache/hadoop/hadoop-client-runtime/${HADOOP_VERSION}/hadoop-client-runtime-${HADOOP_VERSION}.jar /opt/flink/lib/
+
 # Enables abfss:// paths so checkpoints can be written to ADLS2 instead of
 # the JobManager Pod's local disk. Flink's official images ship this plugin
 # jar under opt/, but plugins are only loaded from plugins/ -- verify the

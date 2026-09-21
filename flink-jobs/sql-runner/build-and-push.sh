@@ -10,7 +10,8 @@ set -euo pipefail
 # the .azurecr.io suffix.
 
 ACR_NAME="${ACR_NAME:?set ACR_NAME to the Azure Container Registry name, e.g. acrrealtimelakehousedev}"
-IMAGE="${ACR_NAME}.azurecr.io/sql-runner:latest"
+TAG="${SQL_RUNNER_TAG:?set SQL_RUNNER_TAG, e.g. the short git commit hash; do not reuse a tag (nodes cache by tag)}"
+IMAGE="${ACR_NAME}.azurecr.io/sql-runner:${TAG}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
@@ -22,4 +23,4 @@ az acr login --name "${ACR_NAME}"
 docker push "${IMAGE}"
 
 echo "Built and pushed ${IMAGE}"
-echo "ACR_LOGIN_SERVER in k8s/flink-deployment/00_secrets.env should be ${ACR_NAME}.azurecr.io"
+echo "Set ACR_LOGIN_SERVER=${ACR_NAME}.azurecr.io and SQL_RUNNER_TAG=${TAG} in k8s/flink-deployment/00_secrets.env"

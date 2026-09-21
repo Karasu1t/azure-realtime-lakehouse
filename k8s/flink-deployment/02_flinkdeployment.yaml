@@ -19,7 +19,7 @@ metadata:
   name: inventory-monitor
   namespace: flink
 spec:
-  image: ${ACR_LOGIN_SERVER}/sql-runner:latest
+  image: ${ACR_LOGIN_SERVER}/sql-runner:${SQL_RUNNER_TAG}
   flinkVersion: v1_20
   flinkConfiguration:
     taskmanager.numberOfTaskSlots: "2"
