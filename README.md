@@ -76,6 +76,32 @@
 
 ---
 
+## どのスクリプトが何を作るか
+
+スクリプトはすべて手元PCで実行し、`kubectl`/`helm`/`az`経由でAKSに指示を出す。**AKSの中でスクリプトは動かない**。
+
+AKSに最終的にできるもの（すべてPod）:
+
+```
+flinkの名前空間
+ ├─ flink-kubernetes-operator      Flinkジョブを管理する番人
+ ├─ polaris                        Iceberg REST Catalogサーバー
+ └─ inventory-monitor              JobManager / TaskManager（FlinkDeploymentからOperatorが生成）
+cert-manager（3 Pod）              Operatorのwebhook用の証明書発行
+```
+
+| スクリプト | 何をするか | 結果 |
+|---|---|---|
+| `k8s/flink-operator/install.sh` | cert-manager と Flink Kubernetes Operator を導入 | Operator Pod、`FlinkDeployment` CRD |
+| `flink-jobs/sql-runner/build-and-push.sh` | sql-runnerをビルドしACRへpush | ACR上のイメージ（Podはまだできない） |
+| `k8s/flink-deployment/01_render-and-deploy.sh` | 秘密情報をSQLに埋めてConfigMapと`FlinkDeployment`を適用 | Operatorが JobManager/TaskManager Pod を生成 |
+| `scripts/setup-polaris.sh` | 起動済みPolarisにカタログとFlink用principalを登録 | Podは増えない。Polarisの中身が入る |
+| `scripts/setup-oidc.sh` | GitHub Actions用のOIDC認証をAzureに登録（初回のみ） | Azure ADのアプリ登録 |
+
+Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYAMLを`kubectl apply`する。なお「flink」は、Kubernetesの名前空間（Polarisも同居）・Flinkのソフト本体・`flink-jobs/`ディレクトリの3つの意味で使っている。
+
+---
+
 ## 検証状況
 
 実機（Azure従量課金）で層ごとに確認した結果。**Flinkジョブの起動は未達**で、原因の切り分けは手元のDockerで継続中。
