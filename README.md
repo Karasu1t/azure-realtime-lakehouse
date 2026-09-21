@@ -104,7 +104,7 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
 
 ## 検証状況
 
-実機（Azure従量課金）で層ごとに確認した結果。**Flinkジョブの起動は未達**で、原因の切り分けは手元のDockerで継続中。
+実機（Azure従量課金）で層ごとに確認した結果。**Flinkジョブの起動は、原因を特定・修正したがAKS上では未確認**。
 
 | 層 | 状態 |
 |---|---|
@@ -113,7 +113,7 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
 | AKS / cert-manager + Flink Kubernetes Operator 1.16.0 | 確認済み |
 | Polaris 1.7.0（AKS上で起動、カタログ・専用principalの初期化） | 確認済み |
 | sql-runnerイメージのbuild → ACR push → Podでpull | 確認済み |
-| `FlinkDeployment`（Kafka → Iceberg on Polaris）の稼働 | **未達**（`CREATE CATALOG`でJobManagerがHadoopクラスを認識できず失敗。手元のSQLクライアントでは同じjar構成で通る） |
+| `FlinkDeployment`（Kafka → Iceberg on Polaris）の稼働 | **手元で一部確認**（`CREATE CATALOG`〜`CREATE DATABASE`がPolarisに対して成功。原因はjarのファイル権限とOAuthのscope。AKS上での再確認と`02`〜`04`は未実施） |
 | event_timeの型（`TIMESTAMP(3)`とタイムゾーン付き文字列）、検証スクリプト、CI/CD | 未検証 |
 
 ---
@@ -195,4 +195,7 @@ ADLS2は`public_network_access_enabled = true`のまま、ファイアウォー�
 `:latest`のようなmutableなタグは、ノードが`imagePullPolicy: IfNotPresent`でキャッシュするため、ACRに再pushしても**古いイメージのまま動き続ける**（実際に発生し、原因特定に時間を要した）。ビルドごとに一意なタグ（`SQL_RUNNER_TAG`）を明示し、`build-and-push.sh`はタグ無しでは実行を拒否する。
 
 **課金環境で試す前に、何を手元で検証するか？**
-Polarisの設定は、AKSに載せる前に手元のDockerで同じ手順（起動、認証、カタログ作成、名前空間作成）を通した。これで公式ドキュメントに載っていない挙動（realm名の不一致は`unauthorized_client`としか返らない、`default-base-location`はコンテナのルートでなければ名前空間作成が400になる）を、課金なしで潰せた。Flink側も同様に、`Could not find any factory for identifier 'iceberg'`という「ファクトリが存在しない」ように見えるエラーが、実際には**依存クラス（Hadoop）が読めずにファクトリが発見対象から静かに除外された**場合にも出る（jarを別のIceberg版に差し替えて初めて`ClassNotFoundException`が見えた）。メッセージだけでは区別できないため、原因が分からないときは課金環境で粘らず、手元で最小構成に落として切り分ける。
+Polarisの設定は、AKSに載せる前に手元のDockerで同じ手順（起動、認証、カタログ作成、名前空間作成）を通した。これで公式ドキュメントに載っていない挙動（realm名の不一致は`unauthorized_client`としか返らない、`default-base-location`はコンテナのルートでなければ名前空間作成が400になる）を、課金なしで潰せた。Flink側も同様に、`Could not find any factory for identifier 'iceberg'`という「ファクトリが存在しない」ように見えるエラーが、実際には**jarが読めない・依存クラスが読めないためにファクトリが発見対象から静かに除外された**場合にも出る。今回の根本原因は、DockerfileのADDで入れたjarが所有者root・権限600になり、`flink`ユーザーで動くJobManagerが読めなかったこと（クラスパスの一覧にはjarが載るため気付きにくく、rootで動かす手元のSQLクライアントでは再現しなかった）。メッセージだけでは区別できないため、原因が分からないときは課金環境で粘らず、手元で最小構成に落として切り分ける。
+
+**PolarisへのOAuthで`invalid_scope`になるのはなぜか？**
+IcebergのRESTクライアントは、認証時に既定でscope `catalog`を送るが、Polarisはこれを拒否し`PRINCIPAL_ROLE:ALL`（または特定のprincipal role）を要求する。FlinkのSQLでは`'scope' = 'PRINCIPAL_ROLE:ALL'`を指定する。`credential`（client_id:client_secret）方式で、トークンの取得と更新はクライアントが自動で行う。
