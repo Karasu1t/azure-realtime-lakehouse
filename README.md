@@ -113,8 +113,9 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
 | AKS / cert-manager + Flink Kubernetes Operator 1.16.0 | 確認済み |
 | Polaris 1.7.0（AKS上で起動、カタログ・専用principalの初期化） | 確認済み |
 | sql-runnerイメージのbuild → ACR push → Podでpull | 確認済み |
-| `FlinkDeployment`（Kafka → Iceberg on Polaris）の稼働 | **手元で一部確認**（`CREATE CATALOG`〜`CREATE DATABASE`がPolarisに対して成功。原因はjarのファイル権限とOAuthのscope。AKS上での再確認と`02`〜`04`は未実施） |
-| event_timeの型（`TIMESTAMP(3)`とタイムゾーン付き文字列）、検証スクリプト、CI/CD | 未検証 |
+| `FlinkDeployment`（Kafka → Iceberg on Polaris）の稼働 | **手元で一部確認**（`CREATE CATALOG`〜`CREATE DATABASE`がPolarisに対して成功。Kafkaソーステーブルの定義もjar権限修正後は成功。原因はjarのファイル権限とOAuthのscope。AKS上での再確認と`03`〜`04`は未実施） |
+| Kafkaからの実読み取り、event_timeの型（`TIMESTAMP(3)`とタイムゾーン付き文字列） | 未検証（手元のSQL Client〈埋め込みモード〉が自身のRESTに`0.0.0.0`で接続しようとする既知のクセで頓挫。AKS上の`FlinkDeployment`は別の起動経路のため無関係と判断し、実機で確認する） |
+| 検証スクリプト、CI/CD | 未検証 |
 
 ---
 
