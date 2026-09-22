@@ -5,7 +5,13 @@ CREATE TABLE inventory_events (
   product_id  STRING,
   event_type  STRING,  -- 'SALE' or 'RESTOCK'
   quantity    INT,
-  event_time  TIMESTAMP(3),
+  -- TIMESTAMP_LTZ, not TIMESTAMP: the value carries a timezone (simulator
+  -- sends UTC as a 'Z'-suffixed ISO-8601 string). Confirmed locally that
+  -- Flink's 'json.timestamp-format.standard'='ISO-8601' only accepts a 'Z'
+  -- suffix for this -- a numeric offset like '+00:00' silently parses to
+  -- NULL (no error; json.ignore-parse-errors is what surfaces it as NULL
+  -- instead of failing the job, which is how this was diagnosed).
+  event_time  TIMESTAMP_LTZ(3),
   WATERMARK FOR event_time AS event_time - INTERVAL '5' SECOND
 ) WITH (
   'connector'                       = 'kafka',

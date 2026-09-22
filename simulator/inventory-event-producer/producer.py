@@ -23,11 +23,16 @@ def build_producer() -> KafkaProducer:
 
 
 def event(product_id: str, event_type: str, quantity: int) -> dict:
+    # 'Z', not '+00:00': Flink's json.timestamp-format.standard=ISO-8601
+    # only accepts the 'Z' suffix for TIMESTAMP_LTZ columns -- a numeric
+    # offset parses silently to NULL, confirmed locally against a real
+    # JobManager+TaskManager pair (see 02_source.sql).
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     return {
         "product_id": product_id,
         "event_type": event_type,
         "quantity": quantity,
-        "event_time": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "event_time": timestamp.replace("+00:00", "Z"),
     }
 
 
