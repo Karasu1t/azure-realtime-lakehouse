@@ -114,7 +114,8 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
 | Polaris 1.7.0（AKS上で起動、カタログ・専用principalの初期化） | 確認済み |
 | sql-runnerイメージのbuild → ACR push → Podでpull | 確認済み |
 | `FlinkDeployment`（Kafka → Iceberg on Polaris）の稼働 | **手元で一部確認**（`CREATE CATALOG`〜`CREATE DATABASE`がPolarisに対して成功。Kafkaソーステーブルの定義もjar権限修正後は成功。原因はjarのファイル権限とOAuthのscope。AKS上での再確認と`03`〜`04`は未実施） |
-| Kafkaからの実読み取り、event_timeの型（`TIMESTAMP(3)`とタイムゾーン付き文字列） | 未検証（手元のSQL Client〈埋め込みモード〉が自身のRESTに`0.0.0.0`で接続しようとする既知のクセで頓挫。AKS上の`FlinkDeployment`は別の起動経路のため無関係と判断し、実機で確認する） |
+| Kafkaからの実読み取り、event_timeの型 | **確認済み（手元）**。実際のJobManager+TaskManagerの組で検証。`TIMESTAMP(3)`＋`+00:00`はエラーにならず値が`NULL`になる罠があり、`TIMESTAMP_LTZ(3)`＋`Z`サフィックスに修正して解決（詳細はADR参照） |
+| Icebergへの書き込み（ADLS2） | 未検証（ローカルエミュレータAzuriteはADLS Gen2非対応のため、実機でのみ確認可能） |
 | 検証スクリプト、CI/CD | 未検証 |
 
 ---
@@ -200,3 +201,6 @@ Polarisの設定は、AKSに載せる前に手元のDockerで同じ手順（起�
 
 **PolarisへのOAuthで`invalid_scope`になるのはなぜか？**
 IcebergのRESTクライアントは、認証時に既定でscope `catalog`を送るが、Polarisはこれを拒否し`PRINCIPAL_ROLE:ALL`（または特定のprincipal role）を要求する。FlinkのSQLでは`'scope' = 'PRINCIPAL_ROLE:ALL'`を指定する。`credential`（client_id:client_secret）方式で、トークンの取得と更新はクライアントが自動で行う。
+
+**event_timeの型はなぜ`TIMESTAMP_LTZ(3)`で、シミュレータはなぜ`Z`サフィックスを送るのか？**
+Flinkの`json.timestamp-format.standard = 'ISO-8601'`は、タイムゾーン付きの値を`TIMESTAMP_LTZ`列に読ませる前提で、**`Z`サフィックスしか受け付けない**。Pythonの`datetime.isoformat()`が出す`+00:00`のようなオフセット表記は、**エラーにならず黙って`NULL`になる**（`json.ignore-parse-errors`を使わないと気付けない罠）。手元でJobManager+TaskManagerの組を立てて複数の表記を試し、特定した。当初の`TIMESTAMP(3)`（タイムゾーン無し）も型として不正確だった。合わせて、Icebergテーブル側の`updated_at`列も`TIMESTAMP_LTZ(3)`に揃えている（Icebergのtimestamptz型に対応）。
