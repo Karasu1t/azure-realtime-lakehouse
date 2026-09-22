@@ -23,6 +23,11 @@ CREATE CATALOG polaris_catalog WITH (
   'adls.auth.shared-key.account.key'    = '${ADLS_ACCOUNT_KEY}'
 );
 
-USE CATALOG polaris_catalog;
-
-CREATE DATABASE IF NOT EXISTS inventory;
+-- Deliberately NOT "USE CATALOG polaris_catalog": 02_source.sql's Kafka
+-- table isn't Iceberg data and Polaris (an Iceberg-only catalog) rejects
+-- it outright ("Creating table with watermark specs is not supported
+-- yet"). The Kafka table stays in the default in-memory catalog;
+-- 03_sink.sql/04_pipeline.sql reference this one by its full
+-- polaris_catalog.inventory.* name instead -- the same cross-catalog
+-- INSERT pattern proven in the June kafka-flink-iceberg-handson.
+CREATE DATABASE IF NOT EXISTS polaris_catalog.inventory;

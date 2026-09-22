@@ -51,19 +51,41 @@ public final class SqlRunner {
         }
     }
 
-    // Naive split on ';' -- fine here because none of our statements embed
-    // a literal semicolon in a string value or comment. A real multi-tenant
-    // runner would need a proper SQL-aware splitter instead.
+    // Splits on ';' but not inside a single-quoted string literal --
+    // Event Hubs connection strings are themselves ';'-delimited
+    // (Endpoint=...;SharedAccessKeyName=...;SharedAccessKey=...), so a
+    // naive split broke mid-value once a real connection string (rather
+    // than the ${VAR} placeholder) was substituted in.
     private static List<String> splitStatements(String fileContents) {
         String withoutComments = fileContents.lines()
             .filter(line -> !line.strip().startsWith("--"))
             .reduce((a, b) -> a + "\n" + b)
             .orElse("");
 
-        return List.of(withoutComments.split(";")).stream()
-            .map(String::strip)
-            .filter(s -> !s.isEmpty())
-            .toList();
+        List<String> statements = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inString = false;
+        for (int i = 0; i < withoutComments.length(); i++) {
+            char c = withoutComments.charAt(i);
+            if (c == '\'') {
+                inString = !inString;
+                current.append(c);
+            } else if (c == ';' && !inString) {
+                addIfNotBlank(statements, current);
+                current.setLength(0);
+            } else {
+                current.append(c);
+            }
+        }
+        addIfNotBlank(statements, current);
+        return statements;
+    }
+
+    private static void addIfNotBlank(List<String> statements, StringBuilder current) {
+        String stmt = current.toString().strip();
+        if (!stmt.isEmpty()) {
+            statements.add(stmt);
+        }
     }
 
     private static String firstLine(String statement) {

@@ -19,8 +19,17 @@ export EVENTHUBS_BOOTSTRAP_SERVERS EVENTHUBS_CONNECTION_STRING \
        POLARIS_CLIENT_ID POLARIS_CLIENT_SECRET \
        ACR_LOGIN_SERVER SQL_RUNNER_TAG LOW_STOCK_THRESHOLD
 
+# The variable list passed to envsubst matters: without it, envsubst
+# substitutes *every* $VAR-shaped token in the file, including the
+# unrelated literal "$ConnectionString" that Event Hubs' Kafka SASL
+# convention requires as-is (02_source.sql) -- envsubst silently replaced
+# it with an empty string since no env var named ConnectionString exists,
+# breaking authentication with no error until Flink's SQL parser choked
+# on the resulting empty-quoted string.
+ENVSUBST_VARS='${EVENTHUBS_BOOTSTRAP_SERVERS} ${EVENTHUBS_CONNECTION_STRING} ${ADLS_ACCOUNT_NAME} ${ADLS_ACCOUNT_KEY} ${POLARIS_CLIENT_ID} ${POLARIS_CLIENT_SECRET} ${ACR_LOGIN_SERVER} ${SQL_RUNNER_TAG} ${LOW_STOCK_THRESHOLD}'
+
 for f in "${SQL_DIR}"/*.sql; do
-  envsubst < "$f" > "${RENDERED_DIR}/$(basename "$f")"
+  envsubst "${ENVSUBST_VARS}" < "$f" > "${RENDERED_DIR}/$(basename "$f")"
 done
 
 kubectl create configmap flink-sql \
@@ -28,6 +37,6 @@ kubectl create configmap flink-sql \
   --from-file="${RENDERED_DIR}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-envsubst < "${SCRIPT_DIR}/02_flinkdeployment.yaml" | kubectl apply -f -
+envsubst "${ENVSUBST_VARS}" < "${SCRIPT_DIR}/02_flinkdeployment.yaml" | kubectl apply -f -
 kubectl wait --for=condition=Ready flinkdeployment/inventory-monitor \
   --namespace flink --timeout=180s
