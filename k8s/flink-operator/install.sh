@@ -8,7 +8,11 @@ set -euo pipefail
 # cluster itself, and mixing the two would make `terraform plan` noisy
 # with every operator version bump.
 
-FLINK_OPERATOR_VERSION="${FLINK_OPERATOR_VERSION:-1.16.0}"
+# Apache's release archive only keeps the latest patch of each minor line
+# (1.16.0 was pruned in favor of 1.16.1 between sessions), so this default
+# will go stale again -- check `curl https://downloads.apache.org/flink/`
+# if this 404s.
+FLINK_OPERATOR_VERSION="${FLINK_OPERATOR_VERSION:-1.16.1}"
 CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.20.4}"
 
 # The operator's admission webhook gets its TLS certificate from
