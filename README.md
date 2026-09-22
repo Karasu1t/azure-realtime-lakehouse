@@ -104,19 +104,20 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
 
 ## 検証状況
 
-実機（Azure従量課金）で層ごとに確認した結果。**Flinkジョブの起動は、原因を特定・修正したがAKS上では未確認**。
+実機（Azure従量課金）で層ごとに確認した結果。**コアパイプライン（シミュレータ→Event Hubs→Flink→Polaris→Iceberg on ADLS2）は最後まで通した**。CI/CDのみ未検証（スコープ外）。
 
 | 層 | 状態 |
 |---|---|
-| Terraform（11リソース）/ ADLS2のfirewall経由アクセス | 確認済み |
-| Event Hubs（Kafka互換）へのシミュレータ送信と読み戻し | 確認済み（21件） |
-| AKS / cert-manager + Flink Kubernetes Operator 1.16.0 | 確認済み |
+| Terraform（11リソース + AKS kubelet identityへのStorage RBAC）/ ADLS2のfirewall経由アクセス | 確認済み |
+| Event Hubs（Kafka互換）へのシミュレータ送信と読み戻し | 確認済み |
+| AKS / cert-manager + Flink Kubernetes Operator 1.16.x | 確認済み |
 | Polaris 1.7.0（AKS上で起動、カタログ・専用principalの初期化） | 確認済み |
 | sql-runnerイメージのbuild → ACR push → Podでpull | 確認済み |
-| `FlinkDeployment`（Kafka → Iceberg on Polaris）の稼働 | **手元で一部確認**（`CREATE CATALOG`〜`CREATE DATABASE`がPolarisに対して成功。Kafkaソーステーブルの定義もjar権限修正後は成功。原因はjarのファイル権限とOAuthのscope。AKS上での再確認と`03`〜`04`は未実施） |
-| Kafkaからの実読み取り、event_timeの型 | **確認済み（手元）**。実際のJobManager+TaskManagerの組で検証。`TIMESTAMP(3)`＋`+00:00`はエラーにならず値が`NULL`になる罠があり、`TIMESTAMP_LTZ(3)`＋`Z`サフィックスに修正して解決（詳細はADR参照） |
-| Icebergへの書き込み（ADLS2） | 未検証（ローカルエミュレータAzuriteはADLS Gen2非対応のため、実機でのみ確認可能） |
-| 検証スクリプト、CI/CD | 未検証 |
+| `FlinkDeployment`（Kafka → Iceberg on Polaris）の稼働 | **確認済み**。CreateTable〜継続的なチェックポイント〜Icebergスナップショットのコミットまで安定稼働 |
+| Kafkaからの実読み取り、event_timeの型 | 確認済み。`TIMESTAMP_LTZ(3)`＋`Z`サフィックスで解決（詳細はADR参照） |
+| Icebergへの書き込み（ADLS2） | **確認済み**。`inventory.stock_status`に複数スナップショットが実際にコミットされ、`table.metadata.snapshots`で内容確認済み |
+| 検証スクリプト（`verify_stock_status.py`） | **確認済み**（ただしpyicebergのequality delete未対応制限により、スナップショット/マニフェストのメタデータ確認にフォールバック。詳細はADR参照） |
+| CI/CD、Icebergメンテナンス（`expire_snapshots.py`） | 未検証（スコープ外、コード完成のみ） |
 
 ---
 
@@ -204,3 +205,9 @@ IcebergのRESTクライアントは、認証時に既定でscope `catalog`を送
 
 **event_timeの型はなぜ`TIMESTAMP_LTZ(3)`で、シミュレータはなぜ`Z`サフィックスを送るのか？**
 Flinkの`json.timestamp-format.standard = 'ISO-8601'`は、タイムゾーン付きの値を`TIMESTAMP_LTZ`列に読ませる前提で、**`Z`サフィックスしか受け付けない**。Pythonの`datetime.isoformat()`が出す`+00:00`のようなオフセット表記は、**エラーにならず黙って`NULL`になる**（`json.ignore-parse-errors`を使わないと気付けない罠）。手元でJobManager+TaskManagerの組を立てて複数の表記を試し、特定した。当初の`TIMESTAMP(3)`（タイムゾーン無し）も型として不正確だった。合わせて、Icebergテーブル側の`updated_at`列も`TIMESTAMP_LTZ(3)`に揃えている（Icebergのtimestamptz型に対応）。
+
+**Polaris自身もAzureへのIAM権限が要る、という気付き**
+`01_catalog.sql`のshared-key（account name/key）はFlinkがADLS2へ実データを読み書きする際の認証であり、**それとは別に、Polarisサーバー自身がCREATE TABLE時に書き込み先のストレージ場所を検証するため、Azureに対して自分の身元でアクセスする**。Polarisには明示的なAzure認証情報を渡していないため、Azure Identity SDKの既定の解決順（`DefaultAzureCredential`相当）に従い、**Podが動くAKSノードのManaged Identity（kubelet identity）**でIMDS経由のトークンを取得する。このidentityにはAcrPull以外の権限を与えていなかったため、`Signature did not match`（後に`AuthorizationPermissionMismatch`）で失敗した。対処として`azurerm_role_assignment`でkubelet identityに`Storage Blob Data Owner`を付与（コンテナ単位では効かず、ストレージアカウント単位が必要だった。Polarisが委任SASキー生成等のアカウントレベル操作を行っていると推測）。マネージドサービス（Glue+Athena等）ではカタログ自体のIAMを意識する必要がないため、「自前ホスティングのストレステスト」という本プロジェクトの狙いが最も色濃く出た学びだった。本番ならAKSノードのkubelet identityを流用せず、Polaris専用のWorkload Identity（Federated Credential）に切り出すべき。
+
+**`verify_stock_status.py`がテーブルを読めないことがあるのはなぜか？**
+`03_sink.sql`の`write.upsert.enabled=true`により、Flinkの`IcebergSink`は既存の`product_id`を更新するたびequality delete形式の削除ファイルを書く。pyiceberg（0.12.0、2026-09時点の最新）はこの形式のdeleteをまだマージして読めず（[apache/iceberg#6568](https://github.com/apache/iceberg/issues/6568)）、`table.scan()`が`ValueError`を投げる。データ自体は正しくコミットされているため（`table.metadata.snapshots`で確認可能）、`verify_stock_status.py`はこの例外を捕捉し、スナップショット／マニフェストのメタデータ確認にフォールバックする実装にしている。upsertをやめてappendオンリーにする、あるいはDuckDB等の別クエリエンジンを追加するという選択肢もあったが、テーブル設計（現在庫の最新値を1行で持つ）とTrinoを立てない方針（ADR参照）を優先し、上流ライブラリの既知の制限として記録する形を選んだ。

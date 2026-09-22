@@ -62,3 +62,23 @@ module "acr" {
   aks_kubelet_identity_principal_id = module.aks.kubelet_identity_object_id
   tags                              = local.tags
 }
+
+# Polaris validates the Iceberg table's storage location during CREATE TABLE
+# using its own Azure identity, not Flink's shared-key credential -- it runs
+# with no explicit Azure credential configured, so its DefaultAzureCredential
+# chain resolves to whatever identity the AKS node itself carries via IMDS,
+# which is this same kubelet identity (already used for AcrPull above).
+# Production would replace this with Workload Identity federated to a
+# dedicated identity instead of reusing the node's kubelet identity.
+#
+# Scope is the whole storage account, not just the lakehouse container:
+# a raw DFS REST call with a plain OAuth token succeeded against the
+# container-scoped assignment, but Polaris kept failing with the same
+# identity -- Polaris likely requests a User Delegation Key to vend/validate
+# storage access, and generateUserDelegationKey is an account-level action
+# that a container-scoped role assignment cannot grant.
+resource "azurerm_role_assignment" "aks_storage_blob_contributor" {
+  scope                = module.adls2.storage_account_id
+  role_definition_name = "Storage Blob Data Owner"
+  principal_id         = module.aks.kubelet_identity_object_id
+}

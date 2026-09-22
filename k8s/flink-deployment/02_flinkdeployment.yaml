@@ -30,6 +30,13 @@ spec:
     # for the Iceberg catalog in flink-jobs/inventory-monitor/01_catalog.sql.
     state.checkpoints.dir: "abfss://lakehouse@${ADLS_ACCOUNT_NAME}.dfs.core.windows.net/checkpoints"
     "fs.azure.account.key.${ADLS_ACCOUNT_NAME}.dfs.core.windows.net": "${ADLS_ACCOUNT_KEY}"
+    # ABFS's default OutputStream buffering (fs.azure.data.blocks.buffer=disk)
+    # stages blocks on local disk via Hadoop's "file://" FileSystem, which
+    # isn't registered on this classpath (hadoop-client-api/-runtime only) --
+    # checkpoints failed with "No FileSystem for scheme 'file'" every 30s,
+    # which aborted the checkpoint and reset all job state each time.
+    # bytebuffer keeps blocks in memory instead, sidestepping local disk I/O.
+    fs.azure.data.blocks.buffer: "bytebuffer"
     execution.checkpointing.interval: "30s"
   serviceAccount: flink
   jobManager:

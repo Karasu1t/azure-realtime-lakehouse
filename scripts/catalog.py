@@ -18,6 +18,9 @@ def load_polaris_catalog():
         **{
             "uri": os.environ.get("POLARIS_URI", "http://localhost:8181/api/catalog"),
             "credential": f"{os.environ['POLARIS_CLIENT_ID']}:{os.environ['POLARIS_CLIENT_SECRET']}",
+            # Polaris rejects pyiceberg's default OAuth2 scope 'catalog' with
+            # invalid_scope; same fix as 01_catalog.sql's 'scope' property.
+            "scope": "PRINCIPAL_ROLE:ALL",
             "warehouse": "lakehouse",
             "adls.account-name": os.environ["ADLS_ACCOUNT_NAME"],
             "adls.account-key": os.environ["ADLS_ACCOUNT_KEY"],

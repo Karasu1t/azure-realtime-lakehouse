@@ -19,7 +19,11 @@ CREATE TABLE inventory_events (
   'properties.bootstrap.servers'    = '${EVENTHUBS_BOOTSTRAP_SERVERS}',
   'properties.security.protocol'    = 'SASL_SSL',
   'properties.sasl.mechanism'       = 'PLAIN',
-  'properties.sasl.jaas.config'     = 'org.apache.kafka.common.security.plain.PlainLoginModule required username="$ConnectionString" password="${EVENTHUBS_CONNECTION_STRING}";',
+  -- flink-sql-connector-kafka shades kafka-clients under
+  -- org.apache.flink.kafka.shaded.*, so JAAS's reflective class lookup needs
+  -- that shaded class name -- the unshaded name isn't on the classpath and
+  -- fails with "No LoginModule found for org.apache.kafka.common.security.plain.PlainLoginModule".
+  'properties.sasl.jaas.config'     = 'org.apache.flink.kafka.shaded.org.apache.kafka.common.security.plain.PlainLoginModule required username="$ConnectionString" password="${EVENTHUBS_CONNECTION_STRING}";',
   'properties.group.id'             = 'inventory-monitor',
   'scan.startup.mode'               = 'latest-offset',
   'format'                          = 'json',

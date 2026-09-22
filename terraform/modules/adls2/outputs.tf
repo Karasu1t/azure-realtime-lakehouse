@@ -15,6 +15,11 @@ output "lakehouse_container_name" {
   value = azurerm_storage_container.lakehouse.name
 }
 
+output "lakehouse_container_id" {
+  description = "ARM resource ID, for scoping RBAC role assignments to just this container"
+  value       = azurerm_storage_container.lakehouse.id
+}
+
 output "primary_access_key" {
   description = "Used as ADLS_ACCOUNT_KEY in k8s/flink-deployment/00_secrets.env and scripts' pyiceberg config -- never write this to a committed file"
   value       = azurerm_storage_account.this.primary_access_key
