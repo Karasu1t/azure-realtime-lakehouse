@@ -18,9 +18,11 @@ CREATE CATALOG polaris_catalog WITH (
 
   -- Iceberg's Azure module talks to ADLS2 directly via abfss:// paths;
   -- Polaris only manages the metadata pointer, not the data files.
-  'io-impl'                             = 'org.apache.iceberg.azure.adlsv2.ADLSFileIO',
-  'adls.auth.shared-key.account.name'   = '${ADLS_ACCOUNT_NAME}',
-  'adls.auth.shared-key.account.key'    = '${ADLS_ACCOUNT_KEY}'
+  -- No adls.auth.shared-key.* here: with no credential configured,
+  -- AzureProperties falls through to DefaultAzureCredential, which picks
+  -- up Workload Identity from the 'flink' ServiceAccount's federated
+  -- token (see k8s/flink-deployment/00_serviceaccount.yaml) -- no key.
+  'io-impl' = 'org.apache.iceberg.azure.adlsv2.ADLSFileIO'
 );
 
 -- Deliberately NOT "USE CATALOG polaris_catalog": 02_source.sql's Kafka

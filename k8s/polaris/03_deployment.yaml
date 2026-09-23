@@ -18,7 +18,13 @@ spec:
     metadata:
       labels:
         app: polaris
+        # Required for the AKS Workload Identity mutating webhook to inject
+        # the federated token env vars into this Pod -- without this label,
+        # serviceAccountName below has no effect and Azure Identity SDK's
+        # DefaultAzureCredential falls back to the node's kubelet identity.
+        azure.workload.identity/use: "true"
     spec:
+      serviceAccountName: polaris
       containers:
         - name: polaris
           image: apache/polaris:1.7.0

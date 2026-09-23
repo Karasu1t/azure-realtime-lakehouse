@@ -31,3 +31,13 @@ output "acr_login_server" {
 output "aks_cluster_name" {
   value = module.aks.cluster_name
 }
+
+output "flink_workload_identity_client_id" {
+  description = "Set as the azure.workload.identity/client-id annotation on the 'flink' ServiceAccount"
+  value       = azurerm_user_assigned_identity.flink.client_id
+}
+
+output "polaris_workload_identity_client_id" {
+  description = "Set as the azure.workload.identity/client-id annotation on the 'polaris' ServiceAccount"
+  value       = azurerm_user_assigned_identity.polaris.client_id
+}

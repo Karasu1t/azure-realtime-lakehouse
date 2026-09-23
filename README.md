@@ -104,20 +104,21 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
 
 ## 検証状況
 
-実機（Azure従量課金）で層ごとに確認した結果。**コアパイプライン（シミュレータ→Event Hubs→Flink→Polaris→Iceberg on ADLS2）、CI/CDともに最後まで通した**。Icebergメンテナンスのみ未検証。
+実機（Azure従量課金）で層ごとに確認した結果。**コアパイプライン（シミュレータ→Event Hubs→Flink→Polaris→Iceberg on ADLS2）、CI/CDともに最後まで通した**。Workload Identityへの移行とIcebergメンテナンスは未検証。
 
 | 層 | 状態 |
 |---|---|
-| Terraform（11リソース + AKS kubelet identityへのStorage RBAC）/ ADLS2のfirewall経由アクセス | 確認済み |
+| Terraform（11リソース + Flink/Polaris用Workload Identity）/ ADLS2のfirewall経由アクセス | 確認済み（Workload Identity移行前の、kubelet identity＋shared keyの構成で確認） |
 | Event Hubs（Kafka互換）へのシミュレータ送信と読み戻し | 確認済み |
 | AKS / cert-manager + Flink Kubernetes Operator 1.16.x | 確認済み |
-| Polaris 1.7.0（AKS上で起動、カタログ・専用principalの初期化） | 確認済み |
+| Polaris 1.7.0（AKS上で起動、カタログ・専用principalの初期化） | 確認済み（Workload Identity移行前の構成） |
 | sql-runnerイメージのbuild → ACR push → Podでpull | 確認済み |
-| `FlinkDeployment`（Kafka → Iceberg on Polaris）の稼働 | **確認済み**。CreateTable〜継続的なチェックポイント〜Icebergスナップショットのコミットまで安定稼働 |
+| `FlinkDeployment`（Kafka → Iceberg on Polaris）の稼働 | **確認済み**（Workload Identity移行前の構成）。CreateTable〜継続的なチェックポイント〜Icebergスナップショットのコミットまで安定稼働 |
 | Kafkaからの実読み取り、event_timeの型 | 確認済み。`TIMESTAMP_LTZ(3)`＋`Z`サフィックスで解決（詳細はADR参照） |
-| Icebergへの書き込み（ADLS2） | **確認済み**。`inventory.stock_status`に複数スナップショットが実際にコミットされ、`table.metadata.snapshots`で内容確認済み |
+| Icebergへの書き込み（ADLS2） | **確認済み**（Workload Identity移行前の構成）。`inventory.stock_status`に複数スナップショットが実際にコミットされ、`table.metadata.snapshots`で内容確認済み |
 | 検証スクリプト（`verify_stock_status.py`） | **確認済み**（ただしpyicebergのequality delete未対応制限により、スナップショット/マニフェストのメタデータ確認にフォールバック。詳細はADR参照） |
 | CI/CD（GitHub Actions、OIDC認証） | **確認済み**。`terraform_apply.yml`/`terraform_destroy.yml`ともworkflow_dispatchで実行し、実際にリソースの作成・破棄を確認 |
+| **Workload Identity移行**（Flink・Polarisをshared key/kubelet identityから専用identityに切り替え） | **未検証（コードのみ）**。`WorkloadIdentityTokenProvider`によるABFSチェックポイント認証、`upgradeMode: last-state`＋`high-availability.type: kubernetes`は実機未確認 |
 | Icebergメンテナンス（`expire_snapshots.py`） | 未検証（スコープ外、コード完成のみ） |
 
 ---
@@ -138,14 +139,14 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
      --name $(terraform output -raw aks_cluster_name)
    ```
 3. **Flink Kubernetes Operatorをインストール**: `k8s/flink-operator/install.sh`（cert-managerも入る）
-4. **Polarisをデプロイ**: `k8s/polaris/01_secret.example.yaml`を`01_secret.yaml`にコピーして認証情報を埋め、**4ファイルを明示して**適用する（`-f k8s/polaris/`だと`.example`のプレースホルダーも適用されてしまう）
+4. **Polarisをデプロイ**: `k8s/polaris/02_secret.example.yaml`を`02_secret.yaml`にコピーして認証情報を埋め、`POLARIS_WORKLOAD_IDENTITY_CLIENT_ID`（`terraform output -raw polaris_workload_identity_client_id`）を環境変数にセットしてから
    ```bash
-   kubectl apply -f k8s/polaris/00_namespace.yaml -f k8s/polaris/01_secret.yaml \
-     -f k8s/polaris/02_deployment.yaml -f k8s/polaris/03_service.yaml
+   POLARIS_WORKLOAD_IDENTITY_CLIENT_ID=$(terraform output -raw polaris_workload_identity_client_id) \
+     k8s/polaris/00_render-and-deploy.sh
    ```
 5. **Polarisを初期化**: `kubectl port-forward svc/polaris 8181:8181 -n flink`を開いた状態で`scripts/setup-polaris.sh`。カタログ`lakehouse`とFlink専用のprincipal（`flink_app`）を作り、その認証情報を出力する。in-memoryなのでPolarisのPodが再起動したら再実行する
 6. **SQLランナーをビルド・push**: `ACR_NAME=... SQL_RUNNER_TAG=<一意なタグ> flink-jobs/sql-runner/build-and-push.sh`（タグは毎回変える）
-7. **FlinkDeploymentをデプロイ**: `k8s/flink-deployment/00_secrets.example.env`を`00_secrets.env`にコピーし、`terraform output`の値・手順5の認証情報・手順6のタグを埋めてから`k8s/flink-deployment/01_render-and-deploy.sh`
+7. **FlinkDeploymentをデプロイ**: `k8s/flink-deployment/00_secrets.example.env`を`00_secrets.env`にコピーし、`terraform output`の値（`ADLS_ACCOUNT_NAME`・`flink_workload_identity_client_id`）・手順5の認証情報・手順6のタグを埋めてから`k8s/flink-deployment/01_render-and-deploy.sh`
 8. **シミュレータでイベントを流す**: `simulator/inventory-event-producer/producer.py`
 9. **動作確認**: port-forwardを開いた別ターミナルで`scripts/verify_stock_status.py`
 10. **後片付け**: `terraform destroy -var-file=dev.tfvars`
@@ -215,3 +216,13 @@ Flinkの`json.timestamp-format.standard = 'ISO-8601'`は、タイムゾーン付
 
 **CI用Service PrincipalのIAMロールを、なぜContributorだけでは足りずUser Access Administratorも要るのか？**
 `setup-oidc.sh`で作るCI用Service Principalには、最初サブスクリプションスコープの`Contributor`だけを付与していたが、GitHub Actionsから実際に`terraform apply`を実行すると2箇所で失敗した。①`terraform init`が`AuthorizationPermissionMismatch`でtfstateバックエンド（`use_azuread_auth = true`）にアクセスできない — `Contributor`は管理プレーンの権限であり、Azure ADトークンでのBlobデータ読み書き（データプレーン）には別途`Storage Blob Data Contributor`のようなデータプレーンロールが要る（Polaris自身のIAM問題と同型のバグ）。②AKS kubelet identityへの`azurerm_role_assignment`作成が`AuthorizationFailed`で失敗 — `Contributor`は意図的に`Microsoft.Authorization/roleAssignments/write`（他者への権限付与）を含まない設計になっており、Terraform自身がIAMロールを付与するコードを含む場合は`User Access Administrator`（または`Owner`）が別途必要。CI用SPには結果的に「サブスクリプション全体のContributor + User Access Administrator」という強い権限を与えることになるが、OIDCの信頼範囲を`main`ブランチのみに絞っている（PRやフォークからは実行できない）ことで、ある程度のリスク低減を図っている。より権限を絞るなら、IAMロール付与部分だけ別のTerraform実行（より狭いスコープのSP）に分離する、という改善余地は残る。
+
+**shared key/kubelet identityからWorkload Identityへの移行（部分的）**
+当初、FlinkはADLS2へのshared key（account name/key）、PolarisはAKSノードのkubelet identityを間借りしてADLS2にアクセスしていた（詳細は上記「Polaris自身もAzureへのIAM権限が要る」参照）。どちらも「長期の鍵を持ち回す」「ノード全体の権限を1つのPodが間借りする」という点で、本番構成としては弱い。AKSの`oidc_issuer_enabled`/`workload_identity_enabled`を有効化し、Flink用・Polaris用にそれぞれ専用の`azurerm_user_assigned_identity`＋`azurerm_federated_identity_credential`（K8sの`ServiceAccount`トークンとAzure ADを直接紐づける、鍵を経由しない仕組み）を作成。各ServiceAccountに`azure.workload.identity/client-id`アノテーションを付け、Pod側に`azure.workload.identity/use: "true"`ラベルを付けることで、Azure Identity SDKの`DefaultAzureCredential`が自動的にこの専用identityを見つける。
+
+これにより**Icebergの実データ読み書き（Flink・Polarisとも）は完全にkeylessになった**（`01_catalog.sql`からshared key設定を削除。Icebergは`iceberg-azure-bundle`という独立した比較的新しいAzure SDKを使っており、元々`DefaultAzureCredential`へのフォールバック順序を持っていたのでこちら側の追加実装は不要だった）。
+
+一方、**Flink自身のチェックポイント/HA（Hadoop ABFSドライバ経由）はshared keyのまま残した**。これは実機を使わず、jarの中身を直接調べて分かった制約: このDockerイメージが使う`flink-azure-fs-hadoop-1.20.5.jar`は2022年ビルドの古いHadoop-Azureドライバを内蔵しており、`WorkloadIdentityTokenProvider`クラスが存在しない（Maven Central最新の`hadoop-azure:3.4.1`には存在することを確認済み）。単純にjarを新しいバージョンに差し替えると、同じjarに同居しているFlink側の連携クラス（`org.apache.flink.fs.azure.common.hadoop.HadoopFileSystem`等）まで失う可能性があり、安全に置き換えられない。結果として、AKSノードのkubelet identityはAcrPullだけの最小権限に戻せたが、Flinkの内部状態（ビジネスデータではない）用に、限定された用途でshared keyが1つだけ残っている状態。**2026-09-23時点でWorkload Identity部分はコードのみで実機未検証**（Terraformのapply、K8s ServiceAccountへのWorkload Identity注入が実際に動くかは次回確認が必要）。
+
+**`upgradeMode: last-state`と`high-availability`をセットで入れた理由**
+`upgradeMode: stateless`は、FlinkDeploymentを再適用（redeploy）するたびに直前のチェックポイントを無視して完全にゼロから起動する。デバッグ中に何度も`kubectl delete flinkdeployment && kubectl apply`を繰り返した際、この挙動により集計状態（現在庫の累計）が毎回リセットされるのを実際に目撃した。`last-state`に変えると、redeploy時に直前の実行から自動的に再開する。ただし`last-state`はFlink自身のHA機構（`high-availability.type: kubernetes`、ConfigMapにメタデータを保存する仕組み）が有効になっていないと黙って`stateless`と同じ動作になる、とFlink Kubernetes Operatorのドキュメントにあるため、`high-availability.storageDir`（ADLS2上のパス）とセットで設定した。**これも実機未検証**。

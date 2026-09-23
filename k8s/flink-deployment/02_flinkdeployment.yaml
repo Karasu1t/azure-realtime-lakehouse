@@ -10,9 +10,10 @@
 # depends on an Azure Container Registry that doesn't exist in Terraform
 # yet -- see that script's header comment).
 #
-# ${VAR} placeholders (ADLS_ACCOUNT_NAME, ADLS_ACCOUNT_KEY) are filled in
-# by 01_render-and-deploy.sh from 00_secrets.env, same as the SQL files --
-# this file is envsubst'd before being applied, never applied as-is.
+# ${VAR} placeholders (ADLS_ACCOUNT_NAME, ADLS_ACCOUNT_KEY,
+# FLINK_WORKLOAD_IDENTITY_CLIENT_ID) are filled in by 01_render-and-deploy.sh
+# from 00_secrets.env, same as the SQL files -- this file is envsubst'd
+# before being applied, never applied as-is.
 apiVersion: flink.apache.org/v1beta1
 kind: FlinkDeployment
 metadata:
@@ -23,11 +24,20 @@ spec:
   flinkVersion: v1_20
   flinkConfiguration:
     taskmanager.numberOfTaskSlots: "2"
-    # Checkpoints land in ADLS2 (via the flink-azure-fs-hadoop plugin baked
-    # into the sql-runner image) instead of the JobManager Pod's local
-    # disk, so a Pod loss no longer loses in-flight state between
-    # checkpoints. Auth reuses the same storage account key already used
-    # for the Iceberg catalog in flink-jobs/inventory-monitor/01_catalog.sql.
+    # Checkpoints/HA metadata land in ADLS2 (via the flink-azure-fs-hadoop
+    # plugin baked into the sql-runner image) instead of the JobManager
+    # Pod's local disk. Still the storage account key here, NOT Workload
+    # Identity: the plugin's bundled hadoop-azure driver is from 2022 and
+    # doesn't have WorkloadIdentityTokenProvider (confirmed by inspecting
+    # the actual jar -- it ships only MsiTokenProvider, which would mean
+    # the AKS node's kubelet identity again, not this Pod's own). A newer
+    # hadoop-azure (3.4.1+) has the class, but swapping just that jar risks
+    # colliding with Flink's own glue classes bundled in the same plugin
+    # jar. 01_catalog.sql's actual Iceberg reads/writes DO use Workload
+    # Identity -- that goes through iceberg-azure-bundle's azure-identity
+    # SDK, a completely different, newer codebase with no such limit. This
+    # narrows the remaining key's blast radius to Flink's own internal
+    # bookkeeping, not the business data.
     state.checkpoints.dir: "abfss://lakehouse@${ADLS_ACCOUNT_NAME}.dfs.core.windows.net/checkpoints"
     "fs.azure.account.key.${ADLS_ACCOUNT_NAME}.dfs.core.windows.net": "${ADLS_ACCOUNT_KEY}"
     # ABFS's default OutputStream buffering (fs.azure.data.blocks.buffer=disk)
@@ -38,6 +48,12 @@ spec:
     # bytebuffer keeps blocks in memory instead, sidestepping local disk I/O.
     fs.azure.data.blocks.buffer: "bytebuffer"
     execution.checkpointing.interval: "30s"
+    # last-state needs Flink's own HA metadata (not just the checkpoint
+    # files themselves) to know there's a prior execution to resume from
+    # on redeploy -- without this, last-state silently behaves like
+    # stateless. kubernetes-ha stores that metadata as ConfigMaps.
+    high-availability.type: "kubernetes"
+    high-availability.storageDir: "abfss://lakehouse@${ADLS_ACCOUNT_NAME}.dfs.core.windows.net/ha"
   serviceAccount: flink
   jobManager:
     resource:
@@ -48,6 +64,11 @@ spec:
       memory: "1024m"
       cpu: 0.5
   podTemplate:
+    metadata:
+      labels:
+        # Required for the AKS Workload Identity mutating webhook to
+        # inject the federated token env vars into these Pods.
+        azure.workload.identity/use: "true"
     spec:
       containers:
         - name: flink-main-container
@@ -62,4 +83,7 @@ spec:
     jarURI: local:///opt/flink/usrlib/sql-runner.jar
     args: ["/opt/flink/sql"]
     parallelism: 2
-    upgradeMode: stateless
+    # last-state, not stateless: a redeploy (e.g. re-applying this file
+    # after a config change) now resumes from the last checkpoint instead
+    # of discarding the running aggregation and starting from zero.
+    upgradeMode: last-state
