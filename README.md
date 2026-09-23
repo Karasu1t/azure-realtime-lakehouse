@@ -104,21 +104,21 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
 
 ## 検証状況
 
-実機（Azure従量課金）で層ごとに確認した結果。**コアパイプライン（シミュレータ→Event Hubs→Flink→Polaris→Iceberg on ADLS2）、CI/CDともに最後まで通した**。Workload Identityへの移行とIcebergメンテナンスは未検証。
+実機（Azure従量課金）で層ごとに確認した結果。**コアパイプライン（シミュレータ→Event Hubs→Flink→Polaris→Iceberg on ADLS2）、CI/CD、Workload Identityともに最後まで通した**。Icebergメンテナンスのみ未検証。
 
 | 層 | 状態 |
 |---|---|
-| Terraform（11リソース + Flink/Polaris用Workload Identity）/ ADLS2のfirewall経由アクセス | 確認済み（Workload Identity移行前の、kubelet identity＋shared keyの構成で確認） |
+| Terraform（17リソース、Flink/Polaris用Workload Identity含む）/ ADLS2のfirewall経由アクセス | 確認済み |
 | Event Hubs（Kafka互換）へのシミュレータ送信と読み戻し | 確認済み |
 | AKS / cert-manager + Flink Kubernetes Operator 1.16.x | 確認済み |
-| Polaris 1.7.0（AKS上で起動、カタログ・専用principalの初期化） | 確認済み（Workload Identity移行前の構成） |
+| Polaris 1.7.0（AKS上で起動、カタログ・専用principalの初期化） | 確認済み |
 | sql-runnerイメージのbuild → ACR push → Podでpull | 確認済み |
-| `FlinkDeployment`（Kafka → Iceberg on Polaris）の稼働 | **確認済み**（Workload Identity移行前の構成）。CreateTable〜継続的なチェックポイント〜Icebergスナップショットのコミットまで安定稼働 |
+| `FlinkDeployment`（Kafka → Iceberg on Polaris）の稼働 | **確認済み**。CreateTable〜継続的なチェックポイント〜Icebergスナップショットのコミットまで安定稼働 |
 | Kafkaからの実読み取り、event_timeの型 | 確認済み。`TIMESTAMP_LTZ(3)`＋`Z`サフィックスで解決（詳細はADR参照） |
-| Icebergへの書き込み（ADLS2） | **確認済み**（Workload Identity移行前の構成）。`inventory.stock_status`に複数スナップショットが実際にコミットされ、`table.metadata.snapshots`で内容確認済み |
+| Icebergへの書き込み（ADLS2） | **確認済み**。`inventory.stock_status`に複数スナップショットが実際にコミットされ、`table.metadata.snapshots`で内容確認済み |
 | 検証スクリプト（`verify_stock_status.py`） | **確認済み**（ただしpyicebergのequality delete未対応制限により、スナップショット/マニフェストのメタデータ確認にフォールバック。詳細はADR参照） |
 | CI/CD（GitHub Actions、OIDC認証） | **確認済み**。`terraform_apply.yml`/`terraform_destroy.yml`ともworkflow_dispatchで実行し、実際にリソースの作成・破棄を確認 |
-| **Workload Identity移行**（Flink・Polarisをshared key/kubelet identityから専用identityに切り替え） | **未検証（コードのみ）**。`WorkloadIdentityTokenProvider`によるABFSチェックポイント認証、`upgradeMode: last-state`＋`high-availability.type: kubernetes`は実機未確認 |
+| **Workload Identity移行**（Flink・Polarisをshared key/kubelet identityから専用identityに切り替え） | **確認済み**。PolarisのログでWorkloadIdentityCredentialの使用（`Attempted credential WorkloadIdentityCredential returns a token`）を確認。事前にjarを調査して発見した通りABFSチェックポイント認証はshared keyのままだが、それを含め一発で成功（新規バグなし）。`high-availability.type: kubernetes`のConfigMapも生成を確認 |
 | Icebergメンテナンス（`expire_snapshots.py`） | 未検証（スコープ外、コード完成のみ） |
 
 ---
@@ -222,7 +222,7 @@ Flinkの`json.timestamp-format.standard = 'ISO-8601'`は、タイムゾーン付
 
 これにより**Icebergの実データ読み書き（Flink・Polarisとも）は完全にkeylessになった**（`01_catalog.sql`からshared key設定を削除。Icebergは`iceberg-azure-bundle`という独立した比較的新しいAzure SDKを使っており、元々`DefaultAzureCredential`へのフォールバック順序を持っていたのでこちら側の追加実装は不要だった）。
 
-一方、**Flink自身のチェックポイント/HA（Hadoop ABFSドライバ経由）はshared keyのまま残した**。これは実機を使わず、jarの中身を直接調べて分かった制約: このDockerイメージが使う`flink-azure-fs-hadoop-1.20.5.jar`は2022年ビルドの古いHadoop-Azureドライバを内蔵しており、`WorkloadIdentityTokenProvider`クラスが存在しない（Maven Central最新の`hadoop-azure:3.4.1`には存在することを確認済み）。単純にjarを新しいバージョンに差し替えると、同じjarに同居しているFlink側の連携クラス（`org.apache.flink.fs.azure.common.hadoop.HadoopFileSystem`等）まで失う可能性があり、安全に置き換えられない。結果として、AKSノードのkubelet identityはAcrPullだけの最小権限に戻せたが、Flinkの内部状態（ビジネスデータではない）用に、限定された用途でshared keyが1つだけ残っている状態。**2026-09-23時点でWorkload Identity部分はコードのみで実機未検証**（Terraformのapply、K8s ServiceAccountへのWorkload Identity注入が実際に動くかは次回確認が必要）。
+一方、**Flink自身のチェックポイント/HA（Hadoop ABFSドライバ経由）はshared keyのまま残した**。これは実機を使わず、jarの中身を直接調べて分かった制約: このDockerイメージが使う`flink-azure-fs-hadoop-1.20.5.jar`は2022年ビルドの古いHadoop-Azureドライバを内蔵しており、`WorkloadIdentityTokenProvider`クラスが存在しない（Maven Central最新の`hadoop-azure:3.4.1`には存在することを確認済み）。単純にjarを新しいバージョンに差し替えると、同じjarに同居しているFlink側の連携クラス（`org.apache.flink.fs.azure.common.hadoop.HadoopFileSystem`等）まで失う可能性があり、安全に置き換えられない。結果として、AKSノードのkubelet identityはAcrPullだけの最小権限に戻せたが、Flinkの内部状態（ビジネスデータではない）用に、限定された用途でshared keyが1つだけ残っている状態。**実機で確認済み**（コミット`2c16b66`）: PolarisのログでAzure Identity SDKが実際に`WorkloadIdentityCredential`を使ってトークンを取得していること（`Attempted credential WorkloadIdentityCredential returns a token`）を確認。事前のjar調査で予測した通りの構成のまま、新規バグ無しで一発で動作した。
 
 **`upgradeMode: last-state`と`high-availability`をセットで入れた理由**
-`upgradeMode: stateless`は、FlinkDeploymentを再適用（redeploy）するたびに直前のチェックポイントを無視して完全にゼロから起動する。デバッグ中に何度も`kubectl delete flinkdeployment && kubectl apply`を繰り返した際、この挙動により集計状態（現在庫の累計）が毎回リセットされるのを実際に目撃した。`last-state`に変えると、redeploy時に直前の実行から自動的に再開する。ただし`last-state`はFlink自身のHA機構（`high-availability.type: kubernetes`、ConfigMapにメタデータを保存する仕組み）が有効になっていないと黙って`stateless`と同じ動作になる、とFlink Kubernetes Operatorのドキュメントにあるため、`high-availability.storageDir`（ADLS2上のパス）とセットで設定した。**これも実機未検証**。
+`upgradeMode: stateless`は、FlinkDeploymentを再適用（redeploy）するたびに直前のチェックポイントを無視して完全にゼロから起動する。デバッグ中に何度も`kubectl delete flinkdeployment && kubectl apply`を繰り返した際、この挙動により集計状態（現在庫の累計）が毎回リセットされるのを実際に目撃した。`last-state`に変えると、redeploy時に直前の実行から自動的に再開する。ただし`last-state`はFlink自身のHA機構（`high-availability.type: kubernetes`、ConfigMapにメタデータを保存する仕組み）が有効になっていないと黙って`stateless`と同じ動作になる、とFlink Kubernetes Operatorのドキュメントにあるため、`high-availability.storageDir`（ADLS2上のパス）とセットで設定した。**実機で確認済み**: `inventory-monitor-cluster-config-map`等のHA用ConfigMapが実際に作成されることを確認（redeployでの再開そのものは未確認）。
