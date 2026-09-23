@@ -33,6 +33,30 @@
 
 ---
 
+## 動作デモ
+
+実機（Azure）で実際に動かした際のキャプチャ。
+
+**① イベント処理の様子（Flink Web UI）**
+
+![Flinkでイベントを処理する様子](img/demo01_send_event.gif)
+
+シミュレータからEvent Hubsへイベントを送信すると、Flinkのジョブグラフ上で各オペレータの処理件数（Records Sent/Received）がリアルタイムに増えていく。`Source → GroupAggregate → IcebergStreamWriter → IcebergFilesCommitter`と、値が段階ごとに受け渡されていく様子が確認できる。
+
+**② Icebergテーブルの実データ（変更前）**
+
+![変更前の在庫データ](img/demo02_before.png)
+
+DuckDB（`scripts/verify_stock_status_duckdb.sh`）でPolarisのREST Catalog経由でIcebergテーブルを直接読み出した状態。`P006`は205個。
+
+**③ Icebergテーブルの実データ（変更後）**
+
+![変更後の在庫データ](img/demo03_after.png)
+
+`P006`に対してSALE 4個・RESTOCK 10個を送信した後の状態。`205 - 4 + 10 = 211`個に正しく更新されており（`updated_at`も該当行のみ更新）、他の商品は数値・更新時刻とも変化していないことが確認できる。
+
+---
+
 ## 技術スタック
 
 | レイヤ | 技術 |
