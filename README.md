@@ -117,6 +117,7 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
 | Kafkaからの実読み取り、event_timeの型 | 確認済み。`TIMESTAMP_LTZ(3)`＋`Z`サフィックスで解決（詳細はADR参照） |
 | Icebergへの書き込み（ADLS2） | **確認済み**。`inventory.stock_status`に複数スナップショットが実際にコミットされ、`table.metadata.snapshots`で内容確認済み |
 | 検証スクリプト（`verify_stock_status.py`） | **確認済み**（ただしpyicebergのequality delete未対応制限により、スナップショット/マニフェストのメタデータ確認にフォールバック。詳細はADR参照） |
+| デモ用の代替検証（`verify_stock_status_duckdb.sh`） | **未検証（コードのみ）**。DuckDBの`iceberg`/`azure`拡張はequality deleteをマージして読める想定で、行データをそのまま見せるデモ用に用意。ATTACH/CREATE SECRET構文はローカルで認識されることを確認済みだが、実際にPolaris経由でequality delete付きテーブルを読めるかは次回実機で確認が必要 |
 | CI/CD（GitHub Actions、OIDC認証） | **確認済み**。`terraform_apply.yml`/`terraform_destroy.yml`ともworkflow_dispatchで実行し、実際にリソースの作成・破棄を確認 |
 | **Workload Identity移行**（Flink・Polarisをshared key/kubelet identityから専用identityに切り替え） | **確認済み**。PolarisのログでWorkloadIdentityCredentialの使用（`Attempted credential WorkloadIdentityCredential returns a token`）を確認。事前にjarを調査して発見した通りABFSチェックポイント認証はshared keyのままだが、それを含め一発で成功（新規バグなし） |
 | `upgradeMode: last-state`（redeploy時の状態引き継ぎ） | **確認済み**。`kubectl delete`せずspecを変えて再適用し、同一job ID・チェックポイント番号の連番継続・Kafka offset位置の引き継ぎをJobManagerログで確認（詳細はADR参照） |
@@ -230,6 +231,9 @@ Flinkの`json.timestamp-format.standard = 'ISO-8601'`は、タイムゾーン付
 
 **pyicebergの`expire_snapshots`、正しいAPIはどこにあるのか？**
 `Table.expire_snapshots()`は存在しない（0.12.0時点）。実際のエントリポイントは`Table.maintenance.expire_snapshots()`（`ExpireSnapshots`ビルダーを返す）で、`.older_than(dt)`はエポックミリ秒ではなく`datetime`オブジェクトを要求する。ドキュメントよりインストール済みパッケージ（`pyiceberg/table/maintenance.py`）を直接読んで確認した。実機の`inventory.stock_status`に対し`SNAPSHOT_RETENTION_HOURS=0`で実行し、2スナップショット→1（最新のスナップショットは自動的に保護され消えない）に減ることを確認、稼働中のFlinkジョブへの悪影響も無かった。
+
+**デモで「今のテーブルの中身」を素直に見せたいだけなら、Flinkの設計を変える必要は無い**
+当初「pyicebergが equality delete を読めない」という制約に対し、Flink側の集計方式を`GROUP BY`のupsertから`OVER`ウィンドウの追記型に変える案を検討したが、これは書き込みパイプラインの設計変更であり、影響範囲が大きい。デモの実際の要求は「テーブルの中身をそのまま見せたい」だけだったため、**読む側のツールをpyicebergからDuckDBに変える**方針に転換した（`scripts/verify_stock_status_duckdb.sh`）。DuckDBの`iceberg`拡張はequality deleteをマージして読める（pyiceberg 0.12.0には無い機能）。ATTACH文・CREATE SECRET文（OAuth2、Polarisと同じclient_id/client_secret/scope方式）がローカルで構文的に認識されることは確認済みだが、実際にPolaris経由でこのテーブルを読めるかは未検証（次回実機で確認）。`01_catalog.sql`/`03_sink.sql`/`04_pipeline.sql`は一切変更していない。
 
 **Icebergメンテナンスのworkflow_dispatchが失敗する理由**
 `iceberg_maintenance.yml`は`az aks get-credentials`までは成功するが、続く`kubectl port-forward`が`ConnectionRefusedError`で失敗する。原因はAKSのAPIサーバー自体が`terraform/modules/aks`の`authorized_ip_ranges`（雅さんの自宅IPのみ）でファイアウォールされていること。`az aks get-credentials`はARM（管理プレーン）呼び出しなので通るが、`kubectl`はAPIサーバーへの直接接続が要り、GitHub-hostedランナーは実行のたびに異なるIPを使うため許可リストに引っかからない。同じ理由は`terraform_apply.yml`/`terraform_destroy.yml`には当てはまらない（Terraformが触るのはARM APIのみで、AKSのAPIサーバーには一切接続しないため）。直すには実行前後で`authorized_ip_ranges`を一時的に広げる、あるいはVNet内にself-hosted runnerを置く必要があるが、このメンテナンス自体の優先度がもともと低いため見送り、`scripts/expire_snapshots.py`は手元から手動実行する運用と割り切った。
