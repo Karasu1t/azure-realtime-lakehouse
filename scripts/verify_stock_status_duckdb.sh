@@ -20,6 +20,13 @@ duckdb -c "
 INSTALL iceberg; LOAD iceberg;
 INSTALL azure; LOAD azure;
 
+-- Default Azure SDK transport failed with 'Problem with the SSL CA cert'
+-- even though the system CA bundle (/etc/ssl/certs/ca-certificates.crt)
+-- exists and curl itself works fine against the same endpoint -- the
+-- default adapter just doesn't find it. Switching to the curl-based
+-- transport adapter (which does use the system bundle) fixed it.
+SET azure_transport_option_type = 'curl';
+
 CREATE SECRET polaris_oauth (
   TYPE ICEBERG,
   CLIENT_ID '${POLARIS_CLIENT_ID}',
