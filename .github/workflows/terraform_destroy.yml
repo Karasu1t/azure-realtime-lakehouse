@@ -12,7 +12,9 @@ env:
   ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
   ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
   ARM_USE_OIDC: "true"
-  TF_VAR_authorized_ip_ranges: ${{ vars.TF_VAR_AUTHORIZED_IP_RANGES }}
+  # Secret, not variable: see terraform_apply.yml for why (public repo,
+  # this is a home/office IP address).
+  TF_VAR_authorized_ip_ranges: ${{ secrets.TF_VAR_AUTHORIZED_IP_RANGES }}
 
 jobs:
   destroy:

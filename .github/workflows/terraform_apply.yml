@@ -13,7 +13,10 @@ env:
   ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
   ARM_USE_OIDC: "true"
   # JSON array string, e.g. ["1.2.3.4/32"] -- see terraform/env/dev/dev.tfvars.example
-  TF_VAR_authorized_ip_ranges: ${{ vars.TF_VAR_AUTHORIZED_IP_RANGES }}
+  # A secret, not a variable: this is a home/office IP address, and this
+  # repo is public. Variables are printed in plaintext in run logs;
+  # secrets are masked wherever they'd otherwise appear.
+  TF_VAR_authorized_ip_ranges: ${{ secrets.TF_VAR_AUTHORIZED_IP_RANGES }}
 
 jobs:
   apply:
