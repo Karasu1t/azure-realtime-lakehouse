@@ -104,7 +104,7 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
 
 ## 検証状況
 
-実機（Azure従量課金）で層ごとに確認した結果。**コアパイプライン（シミュレータ→Event Hubs→Flink→Polaris→Iceberg on ADLS2）は最後まで通した**。CI/CDのみ未検証（スコープ外）。
+実機（Azure従量課金）で層ごとに確認した結果。**コアパイプライン（シミュレータ→Event Hubs→Flink→Polaris→Iceberg on ADLS2）、CI/CDともに最後まで通した**。Icebergメンテナンスのみ未検証。
 
 | 層 | 状態 |
 |---|---|
@@ -117,7 +117,8 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
 | Kafkaからの実読み取り、event_timeの型 | 確認済み。`TIMESTAMP_LTZ(3)`＋`Z`サフィックスで解決（詳細はADR参照） |
 | Icebergへの書き込み（ADLS2） | **確認済み**。`inventory.stock_status`に複数スナップショットが実際にコミットされ、`table.metadata.snapshots`で内容確認済み |
 | 検証スクリプト（`verify_stock_status.py`） | **確認済み**（ただしpyicebergのequality delete未対応制限により、スナップショット/マニフェストのメタデータ確認にフォールバック。詳細はADR参照） |
-| CI/CD、Icebergメンテナンス（`expire_snapshots.py`） | 未検証（スコープ外、コード完成のみ） |
+| CI/CD（GitHub Actions、OIDC認証） | **確認済み**。`terraform_apply.yml`/`terraform_destroy.yml`ともworkflow_dispatchで実行し、実際にリソースの作成・破棄を確認 |
+| Icebergメンテナンス（`expire_snapshots.py`） | 未検証（スコープ外、コード完成のみ） |
 
 ---
 
@@ -211,3 +212,6 @@ Flinkの`json.timestamp-format.standard = 'ISO-8601'`は、タイムゾーン付
 
 **`verify_stock_status.py`がテーブルを読めないことがあるのはなぜか？**
 `03_sink.sql`の`write.upsert.enabled=true`により、Flinkの`IcebergSink`は既存の`product_id`を更新するたびequality delete形式の削除ファイルを書く。pyiceberg（0.12.0、2026-09時点の最新）はこの形式のdeleteをまだマージして読めず（[apache/iceberg#6568](https://github.com/apache/iceberg/issues/6568)）、`table.scan()`が`ValueError`を投げる。データ自体は正しくコミットされているため（`table.metadata.snapshots`で確認可能）、`verify_stock_status.py`はこの例外を捕捉し、スナップショット／マニフェストのメタデータ確認にフォールバックする実装にしている。upsertをやめてappendオンリーにする、あるいはDuckDB等の別クエリエンジンを追加するという選択肢もあったが、テーブル設計（現在庫の最新値を1行で持つ）とTrinoを立てない方針（ADR参照）を優先し、上流ライブラリの既知の制限として記録する形を選んだ。
+
+**CI用Service PrincipalのIAMロールを、なぜContributorだけでは足りずUser Access Administratorも要るのか？**
+`setup-oidc.sh`で作るCI用Service Principalには、最初サブスクリプションスコープの`Contributor`だけを付与していたが、GitHub Actionsから実際に`terraform apply`を実行すると2箇所で失敗した。①`terraform init`が`AuthorizationPermissionMismatch`でtfstateバックエンド（`use_azuread_auth = true`）にアクセスできない — `Contributor`は管理プレーンの権限であり、Azure ADトークンでのBlobデータ読み書き（データプレーン）には別途`Storage Blob Data Contributor`のようなデータプレーンロールが要る（Polaris自身のIAM問題と同型のバグ）。②AKS kubelet identityへの`azurerm_role_assignment`作成が`AuthorizationFailed`で失敗 — `Contributor`は意図的に`Microsoft.Authorization/roleAssignments/write`（他者への権限付与）を含まない設計になっており、Terraform自身がIAMロールを付与するコードを含む場合は`User Access Administrator`（または`Owner`）が別途必要。CI用SPには結果的に「サブスクリプション全体のContributor + User Access Administrator」という強い権限を与えることになるが、OIDCの信頼範囲を`main`ブランチのみに絞っている（PRやフォークからは実行できない）ことで、ある程度のリスク低減を図っている。より権限を絞るなら、IAMロール付与部分だけ別のTerraform実行（より狭いスコープのSP）に分離する、という改善余地は残る。
