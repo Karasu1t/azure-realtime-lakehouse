@@ -104,7 +104,7 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
 
 ## 検証状況
 
-実機（Azure従量課金）で層ごとに確認した結果。**コアパイプライン（シミュレータ→Event Hubs→Flink→Polaris→Iceberg on ADLS2）、CI/CD、Workload Identityともに最後まで通した**。Icebergメンテナンスのみ未検証。
+実機（Azure従量課金）で層ごとに確認した結果。**コアパイプライン（シミュレータ→Event Hubs→Flink→Polaris→Iceberg on ADLS2）、CI/CD、Workload Identity、Icebergメンテナンスすべて最後まで確認した**。
 
 | 層 | 状態 |
 |---|---|
@@ -119,7 +119,7 @@ Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYA
 | 検証スクリプト（`verify_stock_status.py`） | **確認済み**（ただしpyicebergのequality delete未対応制限により、スナップショット/マニフェストのメタデータ確認にフォールバック。詳細はADR参照） |
 | CI/CD（GitHub Actions、OIDC認証） | **確認済み**。`terraform_apply.yml`/`terraform_destroy.yml`ともworkflow_dispatchで実行し、実際にリソースの作成・破棄を確認 |
 | **Workload Identity移行**（Flink・Polarisをshared key/kubelet identityから専用identityに切り替え） | **確認済み**。PolarisのログでWorkloadIdentityCredentialの使用（`Attempted credential WorkloadIdentityCredential returns a token`）を確認。事前にjarを調査して発見した通りABFSチェックポイント認証はshared keyのままだが、それを含め一発で成功（新規バグなし）。`high-availability.type: kubernetes`のConfigMapも生成を確認 |
-| Icebergメンテナンス（`expire_snapshots.py`） | 未検証（スコープ外、コード完成のみ） |
+| Icebergメンテナンス（`expire_snapshots.py`） | **確認済み（手元実行）**。`SNAPSHOT_RETENTION_HOURS=0`で実行し、2スナップショット→1（最新は保護されて残る）を確認。GitHub Actions経由（`iceberg_maintenance.yml`）は既知の理由で動かない：`kubectl port-forward`がAKSのAPIサーバー（`authorized_ip_ranges`で自宅IPのみ許可）に直接到達できず、GitHub-hostedランナーのIPは毎回変わるため接続拒否される。詳細はADR参照 |
 
 ---
 
@@ -226,3 +226,9 @@ Flinkの`json.timestamp-format.standard = 'ISO-8601'`は、タイムゾーン付
 
 **`upgradeMode: last-state`と`high-availability`をセットで入れた理由**
 `upgradeMode: stateless`は、FlinkDeploymentを再適用（redeploy）するたびに直前のチェックポイントを無視して完全にゼロから起動する。デバッグ中に何度も`kubectl delete flinkdeployment && kubectl apply`を繰り返した際、この挙動により集計状態（現在庫の累計）が毎回リセットされるのを実際に目撃した。`last-state`に変えると、redeploy時に直前の実行から自動的に再開する。ただし`last-state`はFlink自身のHA機構（`high-availability.type: kubernetes`、ConfigMapにメタデータを保存する仕組み）が有効になっていないと黙って`stateless`と同じ動作になる、とFlink Kubernetes Operatorのドキュメントにあるため、`high-availability.storageDir`（ADLS2上のパス）とセットで設定した。**実機で確認済み**: `inventory-monitor-cluster-config-map`等のHA用ConfigMapが実際に作成されることを確認（redeployでの再開そのものは未確認）。
+
+**pyicebergの`expire_snapshots`、正しいAPIはどこにあるのか？**
+`Table.expire_snapshots()`は存在しない（0.12.0時点）。実際のエントリポイントは`Table.maintenance.expire_snapshots()`（`ExpireSnapshots`ビルダーを返す）で、`.older_than(dt)`はエポックミリ秒ではなく`datetime`オブジェクトを要求する。ドキュメントよりインストール済みパッケージ（`pyiceberg/table/maintenance.py`）を直接読んで確認した。実機の`inventory.stock_status`に対し`SNAPSHOT_RETENTION_HOURS=0`で実行し、2スナップショット→1（最新のスナップショットは自動的に保護され消えない）に減ることを確認、稼働中のFlinkジョブへの悪影響も無かった。
+
+**Icebergメンテナンスのworkflow_dispatchが失敗する理由**
+`iceberg_maintenance.yml`は`az aks get-credentials`までは成功するが、続く`kubectl port-forward`が`ConnectionRefusedError`で失敗する。原因はAKSのAPIサーバー自体が`terraform/modules/aks`の`authorized_ip_ranges`（雅さんの自宅IPのみ）でファイアウォールされていること。`az aks get-credentials`はARM（管理プレーン）呼び出しなので通るが、`kubectl`はAPIサーバーへの直接接続が要り、GitHub-hostedランナーは実行のたびに異なるIPを使うため許可リストに引っかからない。同じ理由は`terraform_apply.yml`/`terraform_destroy.yml`には当てはまらない（Terraformが触るのはARM APIのみで、AKSのAPIサーバーには一切接続しないため）。直すには実行前後で`authorized_ip_ranges`を一時的に広げる、あるいはVNet内にself-hosted runnerを置く必要があるが、このメンテナンス自体の優先度がもともと低いため見送り、`scripts/expire_snapshots.py`は手元から手動実行する運用と割り切った。

@@ -3,6 +3,19 @@ name: iceberg expire snapshots
 # workflow_dispatch, not schedule: this only makes sense while AKS/ADLS2
 # from an active verification session are still up. A cron job would
 # mostly fail against a destroyed cluster -- see README ADR.
+#
+# KNOWN LIMITATION, confirmed 2026-09-23, not fixed: this run always
+# fails at the kubectl port-forward step. az aks get-credentials succeeds
+# (that's an ARM-level call), but kubectl itself needs a direct
+# connection to the AKS API server, which terraform/modules/aks restricts
+# to dev.tfvars' authorized_ip_ranges (a home IP) -- GitHub-hosted
+# runners use a different IP every run, so they're never on that list.
+# Fixing this for real means either widening authorized_ip_ranges for the
+# job's duration (az aks update before/after) or a self-hosted runner
+# inside the VNet; given this maintenance script is already low-priority
+# (see the note above), decided to leave the workflow as-is and run
+# scripts/expire_snapshots.py by hand during a live session instead --
+# verified working that way.
 on:
   workflow_dispatch:
     inputs:
@@ -32,11 +45,9 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      # Populates kubeconfig so kubectl below can reach the cluster.
-      # Unverified: whether this SP's Contributor role is sufficient for
-      # Kubernetes-level RBAC (port-forward into the flink namespace)
-      # depends on the AKS cluster's authorization mode, which
-      # terraform/modules/aks doesn't set explicitly yet.
+      # Populates kubeconfig -- succeeds regardless of the API server IP
+      # restriction below, since this is an ARM-level call, not a direct
+      # connection to the cluster.
       - run: |
           az aks get-credentials \
             --resource-group "${{ vars.AKS_RESOURCE_GROUP }}" \
