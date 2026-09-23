@@ -11,9 +11,12 @@ the README ADR for why a cron job doesn't fit this project's lifecycle
 sessions, so there's nothing for a recurring job to clean up between
 runs).
 
-pyiceberg's expire-snapshots API surface has changed across releases --
-verify Table.expire_snapshots() (or wherever it currently lives) against
-the pinned pyiceberg version before relying on this.
+pyiceberg 0.12.0's expire-snapshots API lives at Table.maintenance
+.expire_snapshots() (returns an ExpireSnapshots builder), not
+Table.expire_snapshots() directly -- that method doesn't exist on Table
+at all. Confirmed against the installed 0.12.0 by inspecting
+pyiceberg/table/maintenance.py and pyiceberg/table/update/snapshot.py;
+verify again if the pinned version changes.
 """
 
 import os
@@ -29,10 +32,10 @@ def main() -> None:
     table = catalog.load_table("inventory.stock_status")
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=RETENTION_HOURS)
-    cutoff_ms = int(cutoff.timestamp() * 1000)
 
     before = len(list(table.snapshots()))
-    table.expire_snapshots().expire_older_than(cutoff_ms).commit()
+    table.maintenance.expire_snapshots().older_than(cutoff).commit()
+    table.refresh()
     after = len(list(table.snapshots()))
 
     print(f"snapshots: {before} -> {after} (expired anything older than {cutoff.isoformat()})")
