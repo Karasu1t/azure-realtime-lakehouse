@@ -1,7 +1,7 @@
 """One-shot demo helper: sends exactly one SALE and one RESTOCK event for a
 single product, instead of producer.py's continuous random stream across
 all products. For showing a clear before/after stock change in a demo
-capture (see README's "動かし方" / verify_stock_status_duckdb.sh).
+capture (see docs/engineering-notes.md / verify_stock_status_duckdb.sh).
 
 Usage: python send_demo_events.py <product_id> [sale_qty] [restock_qty]
 """

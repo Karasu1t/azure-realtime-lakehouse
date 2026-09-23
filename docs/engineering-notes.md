@@ -1,141 +1,141 @@
 # Engineering Notes
 
-README.mdでは扱いきれなかった実装の詳細・デバッグの記録。面接等での深掘りに対するネタ元、または今後同種の構成に取り組む際の参考用。
+Detail that didn't fit in README.md — for anyone digging deeper during an interview, or as reference for a similar build later.
 
 ---
 
-## ディレクトリ構成
+## Directory Layout
 
 ```
 .
 ├── terraform/
 │   ├── modules/
-│   │   ├── aks/                # AKSクラスタ本体
-│   │   ├── event_hubs/         # Event Hubs namespace + Kafka互換設定
-│   │   ├── adls2/              # ストレージアカウント + コンテナ
-│   │   ├── networking/         # VNet, Subnet
-│   │   └── acr/                # sql-runnerイメージ置き場、AKSにAcrPull付与
+│   │   ├── aks/                # AKS cluster itself
+│   │   ├── event_hubs/         # Event Hubs namespace + Kafka-compatible config
+│   │   ├── adls2/              # Storage account + container
+│   │   ├── networking/         # VNet, subnet
+│   │   └── acr/                # sql-runner image registry, grants AcrPull to AKS
 │   └── env/
-│       └── dev/                # `terraform output`で各種接続情報を取得
+│       └── dev/                # `terraform output` surfaces the connection info below
 ├── k8s/
-│   ├── flink-operator/         # Flink Kubernetes OperatorのHelmインストール
-│   ├── polaris/                # Polaris本体（Deployment + Service、in-memory）
-│   └── flink-deployment/       # FlinkDeployment CRD + secretsからのenvsubst&apply
+│   ├── flink-operator/         # Helm install of the Flink Kubernetes Operator
+│   ├── polaris/                # Polaris itself (Deployment + Service, in-memory)
+│   └── flink-deployment/       # FlinkDeployment CRD + envsubst from secrets & apply
 ├── flink-jobs/
-│   ├── inventory-monitor/      # 在庫減少検知ジョブ（4本のFlink SQL）
-│   └── sql-runner/             # SQLファイルを順に実行する自作Javaランナー
+│   ├── inventory-monitor/      # The detection job (4 Flink SQL files)
+│   └── sql-runner/             # Custom Java runner that executes them in order
 ├── simulator/
-│   └── inventory-event-producer/  # 在庫変動イベントのシミュレータ（Python）
-├── scripts/                    # 動作確認・メンテナンス用（後述）
-└── .github/workflows/          # terraform apply/destroy、Icebergメンテナンス
+│   └── inventory-event-producer/  # Synthetic inventory-change event generator (Python)
+├── scripts/                    # Verification and maintenance helpers (below)
+└── .github/workflows/          # terraform apply/destroy, Iceberg maintenance
 ```
 
 ---
 
-## どのスクリプトが何を作るか
+## What Each Script Actually Does
 
-スクリプトはすべて手元PCで実行し、`kubectl`/`helm`/`az`経由でAKSに指示を出す。**AKSの中でスクリプトは動かない**。
+Everything runs from a workstation and drives AKS via `kubectl`/`helm`/`az`. **Nothing here runs inside AKS itself.**
 
-AKSに最終的にできるもの（すべてPod）:
+What ends up running on AKS (all Pods):
 
 ```
-flinkの名前空間
- ├─ flink-kubernetes-operator      Flinkジョブを管理する番人
- ├─ polaris                        Iceberg REST Catalogサーバー
- └─ inventory-monitor              JobManager / TaskManager（FlinkDeploymentからOperatorが生成）
-cert-manager（3 Pod）              Operatorのwebhook用の証明書発行
+flink namespace
+ ├─ flink-kubernetes-operator      watches and manages Flink jobs
+ ├─ polaris                        Iceberg REST Catalog server
+ └─ inventory-monitor              JobManager / TaskManager (created by the Operator from the FlinkDeployment)
+cert-manager (3 Pods)              issues the Operator's webhook certificate
 ```
 
-| スクリプト | 何をするか | 結果 |
+| Script | What it does | Result |
 |---|---|---|
-| `k8s/flink-operator/install.sh` | cert-manager と Flink Kubernetes Operator を導入 | Operator Pod、`FlinkDeployment` CRD |
-| `flink-jobs/sql-runner/build-and-push.sh` | sql-runnerをビルドしACRへpush | ACR上のイメージ（Podはまだできない） |
-| `k8s/flink-deployment/01_render-and-deploy.sh` | 秘密情報をSQLに埋めてConfigMapと`FlinkDeployment`を適用 | Operatorが JobManager/TaskManager Pod を生成 |
-| `scripts/setup-polaris.sh` | 起動済みPolarisにカタログとFlink用principalを登録 | Podは増えない。Polarisの中身が入る |
-| `scripts/setup-oidc.sh` | GitHub Actions用のOIDC認証をAzureに登録（初回のみ） | Azure ADのアプリ登録 |
+| `k8s/flink-operator/install.sh` | Installs cert-manager and the Flink Kubernetes Operator | Operator Pod, `FlinkDeployment` CRD |
+| `flink-jobs/sql-runner/build-and-push.sh` | Builds sql-runner and pushes it to ACR | An image in ACR (no Pod yet) |
+| `k8s/flink-deployment/01_render-and-deploy.sh` | Fills secrets into the SQL files, applies the ConfigMap and `FlinkDeployment` | Operator spins up JobManager/TaskManager Pods |
+| `scripts/setup-polaris.sh` | Registers the catalog and Flink's principal against a freshly started Polaris | No new Pods — populates Polaris's own state |
+| `scripts/setup-oidc.sh` | One-time registration of GitHub Actions' OIDC trust with Azure AD | An Azure AD app registration |
 
-Polaris自体のデプロイはスクリプトではなく、`k8s/polaris/`のYAMLを`kubectl apply`する。なお「flink」は、Kubernetesの名前空間（Polarisも同居）・Flinkのソフト本体・`flink-jobs/`ディレクトリの3つの意味で使っている。
+Polaris itself isn't deployed via a script — its YAML under `k8s/polaris/` is applied directly with `kubectl apply`. Note "flink" is overloaded three ways here: the Kubernetes namespace (which Polaris also lives in), the Flink software itself, and the `flink-jobs/` directory.
 
 ---
 
-## 動かし方（詳細手順）
+## Running It End to End
 
-検証セッションごとにインフラを作って壊す運用（コスト管理のため）。手順は実機で通した順序:
+Infra is stood up and torn down per verification session, for cost control. Order, as run against real Azure:
 
-1. **インフラをapply**
+1. **Apply the infra**
    ```bash
    cd terraform/env/dev
-   cp dev.tfvars.example dev.tfvars   # 自宅IPを記入
+   cp dev.tfvars.example dev.tfvars   # fill in your own IP
    terraform apply -var-file=dev.tfvars
    ```
-2. **kubectlをAKSに接続**
+2. **Point kubectl at the cluster**
    ```bash
    az aks get-credentials --resource-group $(terraform output -raw resource_group_name) \
      --name $(terraform output -raw aks_cluster_name)
    ```
-3. **Flink Kubernetes Operatorをインストール**: `k8s/flink-operator/install.sh`（cert-managerも入る）
-4. **Polarisをデプロイ**: `k8s/polaris/02_secret.example.yaml`を`02_secret.yaml`にコピーして認証情報を埋め、`POLARIS_WORKLOAD_IDENTITY_CLIENT_ID`（`terraform output -raw polaris_workload_identity_client_id`）を環境変数にセットしてから
+3. **Install the Flink Kubernetes Operator** (`k8s/flink-operator/install.sh`, cert-manager included)
+4. **Deploy Polaris**: copy `k8s/polaris/02_secret.example.yaml` to `02_secret.yaml` and fill in real values, then set `POLARIS_WORKLOAD_IDENTITY_CLIENT_ID` (`terraform output -raw polaris_workload_identity_client_id`) and run
    ```bash
    POLARIS_WORKLOAD_IDENTITY_CLIENT_ID=$(terraform output -raw polaris_workload_identity_client_id) \
      k8s/polaris/00_render-and-deploy.sh
    ```
-5. **Polarisを初期化**: `kubectl port-forward svc/polaris 8181:8181 -n flink`を開いた状態で`scripts/setup-polaris.sh`。カタログ`lakehouse`とFlink専用のprincipal（`flink_app`）を作り、その認証情報を出力する。in-memoryなのでPolarisのPodが再起動したら再実行する
-6. **SQLランナーをビルド・push**: `ACR_NAME=... SQL_RUNNER_TAG=<一意なタグ> flink-jobs/sql-runner/build-and-push.sh`（タグは毎回変える）
-7. **FlinkDeploymentをデプロイ**: `k8s/flink-deployment/00_secrets.example.env`を`00_secrets.env`にコピーし、`terraform output`の値（`ADLS_ACCOUNT_NAME`・`flink_workload_identity_client_id`）・手順5の認証情報・手順6のタグを埋めてから`k8s/flink-deployment/01_render-and-deploy.sh`
-8. **シミュレータでイベントを流す**: `simulator/inventory-event-producer/producer.py`（狙った商品だけ動かしたい場合は`send_demo_events.py <product_id>`）
-9. **動作確認**: port-forwardを開いた別ターミナルで`scripts/verify_stock_status.py`、または実データをそのまま見たい場合は`scripts/verify_stock_status_duckdb.sh`
-10. **後片付け**: `terraform destroy -var-file=dev.tfvars`
+5. **Bootstrap Polaris**: with `kubectl port-forward svc/polaris 8181:8181 -n flink` open, run `scripts/setup-polaris.sh`. Creates the `lakehouse` catalog and Flink's dedicated principal (`flink_app`), printing its credentials. Re-run this after every Polaris Pod restart — it's in-memory.
+6. **Build and push the SQL runner**: `ACR_NAME=... SQL_RUNNER_TAG=<unique tag> flink-jobs/sql-runner/build-and-push.sh` (a fresh tag every time)
+7. **Deploy the FlinkDeployment**: copy `k8s/flink-deployment/00_secrets.example.env` to `00_secrets.env`, fill in the values from `terraform output` (`ADLS_ACCOUNT_NAME`, `flink_workload_identity_client_id`), step 5's credentials, and step 6's tag, then run `k8s/flink-deployment/01_render-and-deploy.sh`
+8. **Send events**: `simulator/inventory-event-producer/producer.py` (or `send_demo_events.py <product_id>` to target a single product)
+9. **Verify**: with the port-forward from step 5 still open, run `scripts/verify_stock_status.py`, or `scripts/verify_stock_status_duckdb.sh` to see the actual row data
+10. **Tear down**: `terraform destroy -var-file=dev.tfvars`
 
-GitHub Actions（`terraform_apply.yml`/`terraform_destroy.yml`）からも1・10はworkflow_dispatchで実行できる（OIDC認証、`scripts/setup-oidc.sh`で事前セットアップが必要）。
+Steps 1 and 10 can also run via GitHub Actions (`terraform_apply.yml`/`terraform_destroy.yml`, workflow_dispatch), using OIDC auth set up once via `scripts/setup-oidc.sh`.
 
 ---
 
-## 個別のバグ・詰まりどころの記録
+## Bugs and Gotchas, One by One
 
-**なぜEvent HubsをKafka protocol互換で使うのか（Azure純正のSDKではなく）**
-FlinkのKafka Connectorをそのまま使え、追加の専用コネクタ実装が要らないため。カタログ（Polaris）は出口コストを理由に選んでいるが、すべてのレイヤーで脱ベンダーを目指しているわけではなく、メッセージングのようにマネージドの恩恵が大きいレイヤーは素直にAzureのサービスを使う、という使い分け。
+**Why Event Hubs via the Kafka protocol, not Azure's native SDK**
+Lets Flink's stock Kafka connector work unmodified, no custom connector needed. Polaris was chosen for exit-cost reasons, but not every layer needs to avoid vendor lock-in — messaging is a layer where the managed-service benefit clearly outweighs that concern.
 
-**環境分離はどの単位で行うか**
-Azureの本番組織ではサブスクリプションをdev/stg/prdで分離するのが定石だが、単一環境で完結する本ポートフォリオでは1サブスクリプション内のリソースグループ分離を採用。定石を知った上での意図的な簡略化。
+**How environments are separated**
+A real production org would split subscriptions across dev/stg/prd. This portfolio, being single-environment, uses resource-group separation within one subscription instead — a deliberate simplification, with the `env/` structure in Terraform ready to extend if more environments were ever needed.
 
-**Icebergのmetadata/manifest/data fileが際限なく増える問題にどう対応するか**
-Icebergはcheckpointのたびに新しいmetadata.jsonを追加する（上書きしない）仕様のため、放置すると本番運用ではファイル数が容易に数千〜数万に達する。この対策として`scripts/expire_snapshots.py`と`.github/workflows/iceberg_maintenance.yml`でExpire Snapshotsを実装している。本ポートフォリオの実際の運用（検証セッションごとに`terraform destroy`でADLS2ごと環境を破棄する）では蓄積は1セッション分にしか発生しないが、本番運用でこの問題が実際に起きること・その対処法を理解していることを示すために実装した。
+**Handling Iceberg's unbounded metadata/manifest/data file growth**
+Iceberg appends a new `metadata.json` on every checkpoint rather than overwriting, so an unattended production table can easily accumulate thousands of files. `scripts/expire_snapshots.py` and `.github/workflows/iceberg_maintenance.yml` implement snapshot expiration for this. In this project's actual usage pattern (destroy the whole environment, ADLS2 included, after every session), accumulation never spans more than a single session — the maintenance script exists to demonstrate awareness of the problem and its fix, not because it's load-bearing here.
 
-**ADLS2へのネットワーク経路とアクセス認証はどこまで本番相当か**
-ADLS2は`public_network_access_enabled = true`のまま、ファイアウォールを`default_action = "Deny"`にしてAKSのサブネット（サービスエンドポイント）と検証用の自宅IPだけを許可している。本番ならPrivate Endpointで公開エンドポイントを完全に閉じるのが正しいが、検証スクリプトを手元PCから実行できる構成を優先し、定石を知った上で簡略化している。
+**How production-equivalent is the ADLS2 network path and auth**
+ADLS2 keeps `public_network_access_enabled = true`, with the firewall's `default_action` set to `Deny` and only the AKS subnet (via service endpoint) and a verification workstation's IP allowed through. Setting it to `false` would force Private Endpoint-only access, which would also cut off Flink running on AKS. A real production setup should close the public endpoint entirely via Private Endpoint; this is a deliberate simplification made to keep verification scripts runnable from a workstation.
 
-**Azure従量課金でVMサイズをどう選ぶか（quotaとSKU制限）**
-ノードVMは`Standard_D2as_v7`。当初の`Standard_B2s_v2`は`ErrCode_InsufficientVCPUQuota`で作成に失敗した。vCPU quotaはリージョン合計とは別に**VMファミリーごと**に割り当てられ、この従量課金サブスクリプションではBsv2やDsv5が0だった。さらにquotaがあっても`NotAvailableForSubscription`（SKU制限）で使えないサイズがあり、**両方を満たすものだけが使える**。無料試用では通っていたため`plan`でも気付けない。`az vm list-usage`と`az vm list-skus`の突き合わせで選定した。
+**Choosing a VM size under Azure pay-as-you-go (quota and SKU restrictions)**
+Ended up on `Standard_D2as_v7`. The original `Standard_B2s_v2` failed with `ErrCode_InsufficientVCPUQuota` — vCPU quota is allocated **per VM family**, separately from the regional total, and this subscription had zero quota for both Bsv2 and Dsv5. Even where quota exists, some sizes are blocked outright by `NotAvailableForSubscription` (Dsv6, for example) — **both** conditions have to be satisfied. None of this showed up during the free trial, so `terraform plan` gave no warning either. Cross-referencing `az vm list-usage` against `az vm list-skus` is what actually found a working size.
 
-**コンテナイメージのタグはなぜ毎回変えるのか**
-`:latest`のようなmutableなタグは、ノードが`imagePullPolicy: IfNotPresent`でキャッシュするため、ACRに再pushしても古いイメージのまま動き続ける（実際に発生し、原因特定に時間を要した）。ビルドごとに一意なタグ（`SQL_RUNNER_TAG`）を明示し、`build-and-push.sh`はタグ無しでは実行を拒否する。
+**Why the container image tag changes on every build**
+A mutable tag like `:latest` gets cached by nodes under `imagePullPolicy: IfNotPresent`, so re-pushing to ACR silently keeps the old image running (this actually happened, and cost real time to diagnose). `build-and-push.sh` now refuses to run without an explicit, unique tag (`SQL_RUNNER_TAG`).
 
-**課金環境で試す前に、何を手元で検証するか**
-Polarisの設定は、AKSに載せる前に手元のDockerで同じ手順（起動、認証、カタログ作成、名前空間作成）を通した。これで公式ドキュメントに載っていない挙動（realm名の不一致は`unauthorized_client`としか返らない、`default-base-location`はコンテナのルートでなければ名前空間作成が400になる）を、課金なしで潰せた。Flink側も同様に、`Could not find any factory for identifier 'iceberg'`という「ファクトリが存在しない」ように見えるエラーが、実際には**jarが読めない・依存クラスが読めないためにファクトリが発見対象から静かに除外された**場合にも出る。今回の根本原因は、DockerfileのADDで入れたjarが所有者root・権限600になり、`flink`ユーザーで動くJobManagerが読めなかったこと。メッセージだけでは区別できないため、原因が分からないときは課金環境で粘らず、手元で最小構成に落として切り分ける、という方針を徹底した。
+**What to verify locally before spending money on Azure**
+Polaris's whole configuration (startup, auth, catalog creation, namespace creation) was walked through on local Docker before ever touching AKS. That surfaced undocumented behavior for free — a realm name mismatch just returns `unauthorized_client` with no further detail, and `default-base-location` has to be the container root or namespace creation fails with a 400. Flink had a similar trap: `Could not find any factory for identifier 'iceberg'` looks like a missing factory, but the actual cause was that a jar was unreadable — the classpath listing still showed it. The Dockerfile's `ADD` from a URL wrote the jar as root, mode 600, unreadable by the `flink` user the JobManager actually runs as. Since the error message alone can't distinguish these cases, the working rule became: don't grind on this in a billed environment — reduce to a minimal local repro first.
 
-**PolarisへのOAuthで`invalid_scope`になるのはなぜか**
-IcebergのRESTクライアントは、認証時に既定でscope `catalog`を送るが、Polarisはこれを拒否し`PRINCIPAL_ROLE:ALL`（または特定のprincipal role）を要求する。FlinkのSQLでは`'scope' = 'PRINCIPAL_ROLE:ALL'`を指定する。
+**Why Polaris's OAuth call failed with `invalid_scope`**
+The Iceberg REST client sends scope `catalog` by default; Polaris rejects that and wants `PRINCIPAL_ROLE:ALL` (or a specific principal role). Flink's SQL sets `'scope' = 'PRINCIPAL_ROLE:ALL'` explicitly.
 
-**event_timeの型はなぜ`TIMESTAMP_LTZ(3)`で、シミュレータはなぜ`Z`サフィックスを送るのか**
-Flinkの`json.timestamp-format.standard = 'ISO-8601'`は、タイムゾーン付きの値を`TIMESTAMP_LTZ`列に読ませる前提で、**`Z`サフィックスしか受け付けない**。Pythonの`datetime.isoformat()`が出す`+00:00`のようなオフセット表記は、**エラーにならず黙って`NULL`になる**（`json.ignore-parse-errors`を使わないと気付けない罠）。手元でJobManager+TaskManagerの組を立てて複数の表記を試し、特定した。
+**Why `event_time` is `TIMESTAMP_LTZ(3)`, and why the simulator sends a `Z` suffix**
+Flink's `json.timestamp-format.standard = 'ISO-8601'` expects a timezone-aware value for a `TIMESTAMP_LTZ` column, and **only accepts a `Z` suffix**. A numeric offset like Python's default `+00:00` from `datetime.isoformat()` **silently parses to `NULL`**, no error — invisible unless you turn on `json.ignore-parse-errors` and go looking. Found by standing up a real local JobManager+TaskManager pair and trying several formats.
 
-**`verify_stock_status.py`がテーブルを読めないことがあるのはなぜか**
-`03_sink.sql`の`write.upsert.enabled=true`により、Flinkの`IcebergSink`は既存の`product_id`を更新するたびequality delete形式の削除ファイルを書く。pyiceberg（0.12.0、2026-09時点の最新）はこの形式のdeleteをまだマージして読めず（[apache/iceberg#6568](https://github.com/apache/iceberg/issues/6568)）、`table.scan()`が`ValueError`を投げる。データ自体は正しくコミットされているため（`table.metadata.snapshots`で確認可能）、`verify_stock_status.py`はこの例外を捕捉し、スナップショット／マニフェストのメタデータ確認にフォールバックする実装にしている。
+**Why `verify_stock_status.py` sometimes can't read the table**
+`03_sink.sql`'s `write.upsert.enabled=true` makes Flink's `IcebergSink` write an equality-delete file every time an existing `product_id` gets updated. PyIceberg (0.12.0, the latest release as of writing) can't merge that delete format yet ([apache/iceberg#6568](https://github.com/apache/iceberg/issues/6568)), so `table.scan()` raises a `ValueError`. The data itself is committed correctly (verifiable via `table.metadata.snapshots`); `verify_stock_status.py` catches the exception and falls back to snapshot/manifest metadata instead.
 
-**CI用Service PrincipalのIAMロールを、なぜContributorだけでは足りずUser Access Administratorも要るのか**
-`setup-oidc.sh`で作るCI用Service Principalには、最初サブスクリプションスコープの`Contributor`だけを付与していたが、GitHub Actionsから実際に`terraform apply`を実行すると2箇所で失敗した。①`terraform init`が`AuthorizationPermissionMismatch`でtfstateバックエンド（`use_azuread_auth = true`）にアクセスできない — `Contributor`は管理プレーンの権限であり、Azure ADトークンでのBlobデータ読み書き（データプレーン）には別途`Storage Blob Data Contributor`のようなデータプレーンロールが要る（Polaris自身のIAM問題と同型のバグ）。②AKS kubelet identityへの`azurerm_role_assignment`作成が`AuthorizationFailed`で失敗 — `Contributor`は意図的に`Microsoft.Authorization/roleAssignments/write`（他者への権限付与）を含まない設計になっており、Terraform自身がIAMロールを付与するコードを含む場合は`User Access Administrator`（または`Owner`）が別途必要。
+**Why the CI Service Principal's IAM needs User Access Administrator, not just Contributor**
+`setup-oidc.sh` originally granted the CI Service Principal subscription-scoped `Contributor` only. Running `terraform apply` from GitHub Actions failed in two places: ① `terraform init` hit `AuthorizationPermissionMismatch` against the tfstate backend (`use_azuread_auth = true`) — `Contributor` is a management-plane role, and Azure AD-based Blob data access needs a separate data-plane role like `Storage Blob Data Contributor` (the same shape of bug as Polaris's own IAM issue). ② Creating the `azurerm_role_assignment` for the AKS kubelet identity failed with `AuthorizationFailed` — `Contributor` deliberately excludes `Microsoft.Authorization/roleAssignments/write`, so a Terraform run that itself grants IAM roles needs `User Access Administrator` (or `Owner`) on top.
 
-**`upgradeMode: last-state`と`high-availability`をセットで入れた理由**
-`upgradeMode: stateless`は、FlinkDeploymentを再適用（redeploy）するたびに直前のチェックポイントを無視して完全にゼロから起動する。デバッグ中に何度も`kubectl delete flinkdeployment && kubectl apply`を繰り返した際、この挙動により集計状態（現在庫の累計）が毎回リセットされるのを実際に目撃した。`last-state`に変えると、redeploy時に直前の実行から自動的に再開する。ただし`last-state`はFlink自身のHA機構（`high-availability.type: kubernetes`）が有効になっていないと黙って`stateless`と同じ動作になるため、`high-availability.storageDir`とセットで設定した。実機で確認済み：`execution.checkpointing.interval`を変えて（`kubectl delete`せず）再適用したところ、JobManagerのログに`Restoring job <同一jobId> from Checkpoint 35`と出力され、同一のjob ID・チェックポイント番号の連番継続・Kafkaソースのoffset位置すべてが引き継がれることを確認した。
+**Migrating off shared keys hit a library version wall**
+Flink's own checkpoint/HA storage (via the Hadoop ABFS driver, not Iceberg's own client) stays on the shared key. Found without touching Azure, just by pulling apart the actual jar: the bundled `flink-azure-fs-hadoop-1.20.5.jar` ships a 2022-vintage Hadoop-Azure driver with no `WorkloadIdentityTokenProvider` class (confirmed present in the current `hadoop-azure:3.4.1` from Maven Central). Simply swapping in a newer jar risks losing Flink's own glue classes bundled in the same file, so this one piece stayed keyed rather than risk breaking it blind.
 
-**shared keyからWorkload Identityへの移行時に踏んだライブラリバージョンの壁**
-Flink自身のチェックポイント/HA（Hadoop ABFSドライバ経由）はshared keyのまま残した。これは実機を使わず、jarの中身を直接調べて分かった制約：このDockerイメージが使う`flink-azure-fs-hadoop-1.20.5.jar`は2022年ビルドの古いHadoop-Azureドライバを内蔵しており、`WorkloadIdentityTokenProvider`クラスが存在しない（Maven Central最新の`hadoop-azure:3.4.1`には存在することを確認済み）。単純にjarを新しいバージョンに差し替えると、同じjarに同居しているFlink側の連携クラスまで失う可能性があり、安全に置き換えられないため、この部分だけkeyless化を見送った。
+**Why `upgradeMode: last-state` needed `high-availability` alongside it**
+`upgradeMode: stateless` discards the last checkpoint and starts from zero on every redeploy. Repeated `kubectl delete flinkdeployment && kubectl apply` cycles during debugging made this very visible — the running stock total reset every time. Switching to `last-state` resumes from the previous run instead, but it silently behaves like `stateless` unless Flink's own HA mechanism (`high-availability.type: kubernetes`) is also configured — hence `high-availability.storageDir` alongside it. Verified live: changing `execution.checkpointing.interval` and reapplying (without deleting) produced `Restoring job <same jobId> from Checkpoint 35` in the JobManager log, with checkpoint numbering, job ID, and the Kafka source's offset position all carried through.
 
-**pyicebergの`expire_snapshots`、正しいAPIはどこにあるのか**
-`Table.expire_snapshots()`は存在しない（0.12.0時点）。実際のエントリポイントは`Table.maintenance.expire_snapshots()`（`ExpireSnapshots`ビルダーを返す）で、`.older_than(dt)`はエポックミリ秒ではなく`datetime`オブジェクトを要求する。ドキュメントよりインストール済みパッケージ（`pyiceberg/table/maintenance.py`）を直接読んで確認した。
+**Where pyiceberg's `expire_snapshots` API actually lives**
+`Table.expire_snapshots()` doesn't exist (as of 0.12.0). The real entry point is `Table.maintenance.expire_snapshots()` (returns an `ExpireSnapshots` builder), and `.older_than(dt)` wants a `datetime`, not an epoch-millis integer — found by reading the installed package (`pyiceberg/table/maintenance.py`) directly rather than trusting the docs.
 
-**デモで「今のテーブルの中身」を素直に見せるための、読む側ツールの切り替え**
-pyicebergがequality deleteを読めない制約に対し、Flink側の集計方式を`GROUP BY`のupsertから`OVER`ウィンドウの追記型に変える案も検討したが、書き込みパイプラインの設計変更で影響範囲が大きい。デモの実際の要求は「テーブルの中身をそのまま見せたい」だけだったため、読む側のツールをpyicebergからDuckDBに変える方針に転換した（`scripts/verify_stock_status_duckdb.sh`）。DuckDBの`iceberg`拡張はequality deleteをマージして読める。Flink SQL側（`01_catalog.sql`/`03_sink.sql`/`04_pipeline.sql`）は一切変更していない。実機では既定のAzure SDKトランスポートで`Problem with the SSL CA cert`エラーが発生したが（システムのCA証明書自体は正常、`curl`では同エンドポイントに繋がる）、`SET azure_transport_option_type = 'curl';`で解決した。
+**Switching the read tool for the demo, instead of redesigning Flink**
+The equality-delete limitation above led to considering a rewrite of the aggregation from `GROUP BY` upsert to append-only `OVER`-window output — but that's a real change to the write pipeline. The actual ask for the demo was just "show the table's contents," so the fix was switching the reader from pyiceberg to DuckDB instead (`scripts/verify_stock_status_duckdb.sh`) — its `iceberg` extension does merge equality deletes. The Flink SQL (`01_catalog.sql`/`03_sink.sql`/`04_pipeline.sql`) was never touched. Live, it hit one snag: the default Azure SDK transport failed with `Problem with the SSL CA cert`, even though the system CA bundle was fine and `curl` reached the same endpoint without issue. `SET azure_transport_option_type = 'curl';` fixed it.
 
-**Icebergメンテナンスのworkflow_dispatchが失敗する理由**
-`iceberg_maintenance.yml`は`az aks get-credentials`までは成功するが、続く`kubectl port-forward`が`ConnectionRefusedError`で失敗する。原因はAKSのAPIサーバー自体が`authorized_ip_ranges`（自宅IPのみ）でファイアウォールされていること。`az aks get-credentials`はARM（管理プレーン）呼び出しなので通るが、`kubectl`はAPIサーバーへの直接接続が要り、GitHub-hostedランナーは実行のたびに異なるIPを使うため許可リストに引っかかる。同じ理由は`terraform_apply.yml`/`terraform_destroy.yml`には当てはまらない（Terraformが触るのはARM APIのみで、AKSのAPIサーバーには一切接続しないため）。直すには実行前後で`authorized_ip_ranges`を一時的に広げる、あるいはVNet内にself-hosted runnerを置く必要があるが、優先度が低いため見送り、`scripts/expire_snapshots.py`は手元から手動実行する運用と割り切った。
+**Why the Iceberg maintenance workflow_dispatch fails**
+`iceberg_maintenance.yml` gets through `az aks get-credentials` fine, then fails at `kubectl port-forward` with `ConnectionRefusedError`. The cause is the AKS API server's own `authorized_ip_ranges` (a home IP only) — `az aks get-credentials` is an ARM (management-plane) call and passes regardless, but `kubectl` needs a direct connection to the API server, and GitHub-hosted runners use a different IP on every run, so they never match the allowlist. The same issue doesn't affect `terraform_apply.yml`/`terraform_destroy.yml`, since Terraform only ever talks to ARM APIs and never connects to the AKS API server directly. Fixing this properly would mean widening `authorized_ip_ranges` for the run's duration or standing up a self-hosted runner inside the VNet; given this maintenance path was already low priority, `scripts/expire_snapshots.py` is run by hand instead.
